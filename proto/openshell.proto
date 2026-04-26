@@ -209,6 +209,13 @@ message SandboxSpec {
   bool gpu = 9;
 }
 
+// Durable OpenShell-managed workspace mounted into a sandbox.
+message PersistentWorkspace {
+  // Stable caller-owned workspace identity. The gateway maps this ref to a
+  // compute-platform volume and reuses that volume across sandbox lifetimes.
+  string ref = 1;
+}
+
 // Public sandbox template mapped onto compute-driver template inputs.
 message SandboxTemplate {
   // Fully-qualified OCI image reference used to boot the sandbox.
@@ -227,6 +234,8 @@ message SandboxTemplate {
   google.protobuf.Struct resources = 7;
   // Optional platform-specific volume claim templates.
   google.protobuf.Struct volume_claim_templates = 9;
+  // Optional durable workspace mounted at /sandbox.
+  PersistentWorkspace persistent_workspace = 10;
 }
 
 // User-facing sandbox status derived by the gateway from compute-driver observations.

@@ -5,7 +5,11 @@
 
 use crate::config::KubernetesComputeConfig;
 use futures::{Stream, StreamExt, TryStreamExt};
-use k8s_openapi::api::core::v1::{Event as KubeEventObj, Node};
+use k8s_openapi::api::core::v1::{
+    Event as KubeEventObj, Node, PersistentVolumeClaim, PersistentVolumeClaimSpec,
+    ResourceRequirements,
+};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::api::{Api, ApiResource, DeleteParams, ListParams, PostParams};
 use kube::core::gvk::GroupVersionKind;
 use kube::core::{DynamicObject, ObjectMeta};
@@ -18,6 +22,7 @@ use openshell_core::proto::compute::v1::{
     GetCapabilitiesResponse, WatchSandboxesDeletedEvent, WatchSandboxesEvent,
     WatchSandboxesPlatformEvent, WatchSandboxesSandboxEvent, watch_sandboxes_event,
 };
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::time::Duration;
@@ -62,7 +67,7 @@ const GPU_RESOURCE_NAME: &str = "nvidia.com/gpu";
 const GPU_RESOURCE_QUANTITY: &str = "1";
 
 // ---------------------------------------------------------------------------
-// Default workspace persistence (temporary — will be replaced by snapshotting)
+// Default and persistent workspace persistence
 // ---------------------------------------------------------------------------
 // Every sandbox pod gets a PVC-backed `/sandbox` directory so that user data
 // (installed packages, files, dotfiles) survives pod rescheduling across
@@ -98,6 +103,18 @@ const WORKSPACE_DEFAULT_STORAGE: &str = "2Gi";
 /// Sentinel file written by the init container after copying the image's
 /// `/sandbox` contents.  Subsequent pod starts skip the copy.
 const WORKSPACE_SENTINEL: &str = ".workspace-initialized";
+
+/// `platform_config` key for an OpenShell-managed persistent workspace ref.
+const PERSISTENT_WORKSPACE_REF_KEY: &str = "persistent_workspace_ref";
+
+/// PVC label storing the stable hash of the persistent workspace ref.
+const PERSISTENT_WORKSPACE_HASH_LABEL: &str = "openshell.ai/workspace-ref-hash";
+
+/// PVC annotation storing the full persistent workspace ref for operator debugging.
+const PERSISTENT_WORKSPACE_REF_ANNOTATION: &str = "openshell.ai/workspace-ref";
+
+/// Prefix for OpenShell-managed persistent workspace PVCs.
+const PERSISTENT_WORKSPACE_PVC_PREFIX: &str = "ows";
 
 #[derive(Clone)]
 pub struct KubernetesComputeDriver {
@@ -179,6 +196,10 @@ impl KubernetesComputeDriver {
         let gvk = GroupVersionKind::gvk(SANDBOX_GROUP, SANDBOX_VERSION, SANDBOX_KIND);
         let resource = ApiResource::from_gvk(&gvk);
         Api::namespaced_with(self.client.clone(), &self.config.namespace, &resource)
+    }
+
+    fn workspace_api(&self) -> Api<PersistentVolumeClaim> {
+        Api::namespaced(self.client.clone(), &self.config.namespace)
     }
 
     async fn has_gpu_capacity(&self) -> Result<bool, KubeError> {
@@ -289,6 +310,72 @@ impl KubernetesComputeDriver {
         &self.config.ssh_handshake_secret
     }
 
+    async fn ensure_persistent_workspace_claim(
+        &self,
+        workspace_ref: &str,
+    ) -> Result<String, KubernetesDriverError> {
+        let claim_name = persistent_workspace_claim_name(workspace_ref);
+        let api = self.workspace_api();
+
+        match tokio::time::timeout(KUBE_API_TIMEOUT, api.get(&claim_name)).await {
+            Ok(Ok(existing)) => {
+                validate_persistent_workspace_claim(&existing, workspace_ref)?;
+                info!(
+                    namespace = %self.config.namespace,
+                    workspace_ref = %workspace_ref,
+                    claim_name = %claim_name,
+                    "Reusing existing persistent workspace PVC"
+                );
+                Ok(claim_name)
+            }
+            Ok(Err(KubeError::Api(err))) if err.code == 404 => {
+                let pvc = persistent_workspace_claim(workspace_ref, &claim_name);
+                match tokio::time::timeout(
+                    KUBE_API_TIMEOUT,
+                    api.create(&PostParams::default(), &pvc),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        info!(
+                            namespace = %self.config.namespace,
+                            workspace_ref = %workspace_ref,
+                            claim_name = %claim_name,
+                            "Created persistent workspace PVC"
+                        );
+                        Ok(claim_name)
+                    }
+                    Ok(Err(KubeError::Api(err))) if err.code == 409 => {
+                        let existing = tokio::time::timeout(
+                            KUBE_API_TIMEOUT,
+                            api.get(&claim_name),
+                        )
+                        .await
+                        .map_err(|_| {
+                            KubernetesDriverError::Message(format!(
+                                "timed out after {}s fetching concurrently-created workspace PVC",
+                                KUBE_API_TIMEOUT.as_secs()
+                            ))
+                        })?
+                        .map_err(KubernetesDriverError::from_kube)?;
+                        validate_persistent_workspace_claim(&existing, workspace_ref)?;
+                        Ok(claim_name)
+                    }
+                    Ok(Err(err)) => Err(KubernetesDriverError::from_kube(err)),
+                    Err(_) => Err(KubernetesDriverError::Message(format!(
+                        "timed out after {}s creating workspace PVC",
+                        KUBE_API_TIMEOUT.as_secs()
+                    ))),
+                }
+            }
+            Ok(Err(err)) => Err(KubernetesDriverError::from_kube(err)),
+            Err(_) => Err(KubernetesDriverError::Message(format!(
+                "timed out after {}s fetching workspace PVC",
+                KUBE_API_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
     pub async fn create_sandbox(&self, sandbox: &Sandbox) -> Result<(), KubernetesDriverError> {
         let name = sandbox.name.as_str();
         info!(
@@ -297,6 +384,10 @@ impl KubernetesComputeDriver {
             namespace = %self.config.namespace,
             "Creating sandbox in Kubernetes"
         );
+
+        if let Some(workspace_ref) = persistent_workspace_ref(sandbox.spec.as_ref()) {
+            self.ensure_persistent_workspace_claim(&workspace_ref).await?;
+        }
 
         let gvk = GroupVersionKind::gvk(SANDBOX_GROUP, SANDBOX_VERSION, SANDBOX_KIND);
         let resource = ApiResource::from_gvk(&gvk);
@@ -767,10 +858,11 @@ fn apply_supervisor_sideload(pod_template: &mut serde_json::Value) {
 ///   2. An init container (same image) that seeds the PVC with the image's
 ///      original `/sandbox` contents on first use.
 ///
-/// The PVC volume itself is **not** added here — the Sandbox CRD controller
-/// automatically creates a volume for each entry in `volumeClaimTemplates`
-/// (following the StatefulSet convention).  Adding one here would create a
-/// duplicate volume name and fail pod validation.
+/// For the default workspace mode, the PVC volume itself is **not** added here:
+/// the Sandbox CRD controller creates a volume for each entry in
+/// `volumeClaimTemplates` (following the StatefulSet convention).  For a
+/// persistent workspace, `apply_workspace_persistent_volume_claim` adds the
+/// derived PVC volume before this function adds the mount and init container.
 ///
 /// The init container mounts the PVC at a temporary path so it can still see
 /// the image's `/sandbox` directory.  It checks for a sentinel file and skips
@@ -854,6 +946,27 @@ fn apply_workspace_persistence(
     }
 }
 
+fn apply_workspace_persistent_volume_claim(
+    pod_template: &mut serde_json::Value,
+    claim_name: &str,
+) {
+    let Some(spec) = pod_template.get_mut("spec").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    let volumes = spec
+        .entry("volumes")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut();
+    if let Some(volumes) = volumes {
+        volumes.push(serde_json::json!({
+            "name": WORKSPACE_VOLUME_NAME,
+            "persistentVolumeClaim": {
+                "claimName": claim_name
+            }
+        }));
+    }
+}
+
 /// Build the default `volumeClaimTemplates` array for sandbox pods.
 ///
 /// Provides a single PVC named "workspace" that backs the `/sandbox`
@@ -874,6 +987,137 @@ fn default_workspace_volume_claim_templates() -> serde_json::Value {
     }])
 }
 
+fn persistent_workspace_ref(spec: Option<&SandboxSpec>) -> Option<String> {
+    spec.and_then(|s| s.template.as_ref())
+        .and_then(|t| platform_config_string(t, PERSISTENT_WORKSPACE_REF_KEY))
+        .filter(|workspace_ref| !workspace_ref.is_empty())
+}
+
+fn persistent_workspace_claim_name(workspace_ref: &str) -> String {
+    let hash = persistent_workspace_ref_hash(workspace_ref);
+    let slug = persistent_workspace_slug(workspace_ref);
+    let hash_len = 16;
+    let hash_part = &hash[..hash_len];
+    let max_slug_len = 63 - PERSISTENT_WORKSPACE_PVC_PREFIX.len() - hash_len - 2;
+    let mut slug_part: String = slug.chars().take(max_slug_len).collect();
+    while slug_part.ends_with('-') {
+        slug_part.pop();
+    }
+    if slug_part.is_empty() {
+        format!("{PERSISTENT_WORKSPACE_PVC_PREFIX}-{hash_part}")
+    } else {
+        format!("{PERSISTENT_WORKSPACE_PVC_PREFIX}-{slug_part}-{hash_part}")
+    }
+}
+
+fn persistent_workspace_ref_hash(workspace_ref: &str) -> String {
+    let digest = Sha256::digest(workspace_ref.as_bytes());
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn persistent_workspace_slug(workspace_ref: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for byte in workspace_ref.bytes() {
+        let next = match byte {
+            b'a'..=b'z' | b'0'..=b'9' => Some(byte as char),
+            b'A'..=b'Z' => Some((byte + 32) as char),
+            b'-' | b'_' | b'.' => Some('-'),
+            _ => None,
+        };
+        if let Some(ch) = next {
+            if ch == '-' {
+                if !previous_dash && !slug.is_empty() {
+                    slug.push(ch);
+                }
+                previous_dash = true;
+            } else {
+                slug.push(ch);
+                previous_dash = false;
+            }
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+fn persistent_workspace_claim(workspace_ref: &str, claim_name: &str) -> PersistentVolumeClaim {
+    let hash = persistent_workspace_ref_hash(workspace_ref);
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        SANDBOX_MANAGED_LABEL.to_string(),
+        SANDBOX_MANAGED_VALUE.to_string(),
+    );
+    labels.insert(PERSISTENT_WORKSPACE_HASH_LABEL.to_string(), hash);
+
+    let mut annotations = BTreeMap::new();
+    annotations.insert(
+        PERSISTENT_WORKSPACE_REF_ANNOTATION.to_string(),
+        workspace_ref.to_string(),
+    );
+
+    let mut requests = BTreeMap::new();
+    requests.insert(
+        "storage".to_string(),
+        Quantity(WORKSPACE_DEFAULT_STORAGE.to_string()),
+    );
+
+    PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            name: Some(claim_name.to_string()),
+            labels: Some(labels),
+            annotations: Some(annotations),
+            ..Default::default()
+        },
+        spec: Some(PersistentVolumeClaimSpec {
+            access_modes: Some(vec!["ReadWriteOnce".to_string()]),
+            resources: Some(ResourceRequirements {
+                requests: Some(requests),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn validate_persistent_workspace_claim(
+    claim: &PersistentVolumeClaim,
+    workspace_ref: &str,
+) -> Result<(), KubernetesDriverError> {
+    let labels = claim.metadata.labels.as_ref().ok_or_else(|| {
+        KubernetesDriverError::Precondition(
+            "persistent workspace PVC exists without OpenShell labels".to_string(),
+        )
+    })?;
+
+    if labels.get(SANDBOX_MANAGED_LABEL).map(String::as_str)
+        != Some(SANDBOX_MANAGED_VALUE)
+    {
+        return Err(KubernetesDriverError::Precondition(
+            "persistent workspace PVC exists but is not managed by OpenShell".to_string(),
+        ));
+    }
+
+    let expected_hash = persistent_workspace_ref_hash(workspace_ref);
+    if labels
+        .get(PERSISTENT_WORKSPACE_HASH_LABEL)
+        .map(String::as_str)
+        != Some(expected_hash.as_str())
+    {
+        return Err(KubernetesDriverError::Precondition(
+            "persistent workspace PVC exists for a different workspace ref".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sandbox_to_k8s_spec(
     spec: Option<&SandboxSpec>,
@@ -890,16 +1134,18 @@ fn sandbox_to_k8s_spec(
 ) -> serde_json::Value {
     let mut root = serde_json::Map::new();
 
-    // Determine early whether the user provided custom volumeClaimTemplates.
-    // When they haven't, we inject a default workspace VCT and corresponding
-    // init container + volume mount so sandbox data persists.  We need this
-    // flag before building the podTemplate because the workspace persistence
-    // transforms are applied inside sandbox_template_to_k8s.
+    // Determine early which workspace mode is active.  By default we inject a
+    // sandbox-owned workspace VCT.  When the caller provides a persistent
+    // workspace ref, the driver ensures and mounts the corresponding PVC.
     let user_has_vct = spec
         .and_then(|s| s.template.as_ref())
         .and_then(|t| platform_config_struct(t, "volume_claim_templates"))
         .is_some();
-    let inject_workspace = !user_has_vct;
+    let persistent_workspace_ref = spec
+        .and_then(|s| s.template.as_ref())
+        .and_then(|t| platform_config_string(t, PERSISTENT_WORKSPACE_REF_KEY));
+    let use_persistent_workspace = persistent_workspace_ref.is_some();
+    let inject_workspace = use_persistent_workspace || !user_has_vct;
 
     if let Some(spec) = spec {
         if !spec.log_level.is_empty() {
@@ -945,9 +1191,9 @@ fn sandbox_to_k8s_spec(
         }
     }
 
-    // Inject the default workspace volumeClaimTemplate when the user didn't
-    // provide their own.
-    if inject_workspace {
+    // Inject the default workspace volumeClaimTemplate when the caller didn't
+    // provide either their own templates or a persistent workspace.
+    if !user_has_vct && !use_persistent_workspace {
         root.insert(
             "volumeClaimTemplates".to_string(),
             default_workspace_volume_claim_templates(),
@@ -1119,6 +1365,11 @@ fn sandbox_template_to_k8s(
     template_value.insert("spec".to_string(), serde_json::Value::Object(spec));
 
     let mut result = serde_json::Value::Object(template_value);
+
+    if let Some(workspace_ref) = platform_config_string(template, PERSISTENT_WORKSPACE_REF_KEY) {
+        let claim_name = persistent_workspace_claim_name(&workspace_ref);
+        apply_workspace_persistent_volume_claim(&mut result, &claim_name);
+    }
 
     // Always side-load the supervisor binary from the node filesystem
     apply_supervisor_sideload(&mut result);
@@ -1946,5 +2197,89 @@ mod tests {
             !has_workspace_mount,
             "workspace mount must NOT be present when inject_workspace is false"
         );
+    }
+
+    #[test]
+    fn persistent_workspace_mounts_derived_claim_without_vct() {
+        let workspace_ref = "agent-profile-00000000-0000-0000-0000-000000000001";
+        let template = SandboxTemplate {
+            platform_config: Some(Struct {
+                fields: [(
+                    PERSISTENT_WORKSPACE_REF_KEY.to_string(),
+                    Value {
+                        kind: Some(Kind::StringValue(workspace_ref.to_string())),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }),
+            ..SandboxTemplate::default()
+        };
+        let spec = SandboxSpec {
+            template: Some(template),
+            ..SandboxSpec::default()
+        };
+
+        let root = sandbox_to_k8s_spec(
+            Some(&spec),
+            "openshell/sandbox:latest",
+            "IfNotPresent",
+            "sandbox-id",
+            "sandbox-name",
+            "https://gateway.example.com",
+            "0.0.0.0:2222",
+            "secret",
+            300,
+            "",
+            "",
+        );
+
+        assert!(
+            root["spec"]["volumeClaimTemplates"].is_null(),
+            "persistent workspace must not create sandbox-owned VCTs"
+        );
+
+        let pod_spec = &root["spec"]["podTemplate"]["spec"];
+        let workspace_volume = pod_spec["volumes"]
+            .as_array()
+            .expect("volumes should exist")
+            .iter()
+            .find(|volume| volume["name"] == WORKSPACE_VOLUME_NAME)
+            .expect("workspace PVC volume should exist");
+        assert_eq!(
+            workspace_volume["persistentVolumeClaim"]["claimName"],
+            persistent_workspace_claim_name(workspace_ref)
+        );
+
+        let agent_mount = pod_spec["containers"][0]["volumeMounts"]
+            .as_array()
+            .expect("agent volumeMounts should exist")
+            .iter()
+            .find(|mount| mount["name"] == WORKSPACE_VOLUME_NAME)
+            .expect("workspace mount should exist");
+        assert_eq!(agent_mount["mountPath"], WORKSPACE_MOUNT_PATH);
+
+        let init_mount = &pod_spec["initContainers"][0]["volumeMounts"][0];
+        assert_eq!(init_mount["name"], WORKSPACE_VOLUME_NAME);
+        assert_eq!(init_mount["mountPath"], WORKSPACE_INIT_MOUNT_PATH);
+    }
+
+    #[test]
+    fn persistent_workspace_claim_uses_openshell_ownership_labels() {
+        let workspace_ref = "agent-profile-00000000-0000-0000-0000-000000000001";
+        let claim_name = persistent_workspace_claim_name(workspace_ref);
+        let claim = persistent_workspace_claim(workspace_ref, &claim_name);
+
+        assert_eq!(claim.metadata.name.as_deref(), Some(claim_name.as_str()));
+        let labels = claim.metadata.labels.as_ref().expect("labels should exist");
+        assert_eq!(
+            labels.get(SANDBOX_MANAGED_LABEL).map(String::as_str),
+            Some(SANDBOX_MANAGED_VALUE)
+        );
+        assert_eq!(
+            labels.get(PERSISTENT_WORKSPACE_HASH_LABEL).map(String::as_str),
+            Some(persistent_workspace_ref_hash(workspace_ref).as_str())
+        );
+        assert!(validate_persistent_workspace_claim(&claim, workspace_ref).is_ok());
     }
 }
