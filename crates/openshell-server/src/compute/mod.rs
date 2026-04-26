@@ -1190,8 +1190,8 @@ fn extract_typed_resources(
 }
 
 /// Build the opaque `platform_config` Struct from platform-specific public
-/// template fields (`runtime_class_name`, annotations, `volume_claim_templates`)
-/// plus any resource fields beyond CPU/memory.
+/// template fields (`runtime_class_name`, annotations, `volume_claim_templates`,
+/// `persistent_workspace`) plus any resource fields beyond CPU/memory.
 fn build_platform_config(template: &SandboxTemplate) -> Option<prost_types::Struct> {
     use prost_types::{Struct, Value, value::Kind};
 
@@ -1248,6 +1248,15 @@ fn build_platform_config(template: &SandboxTemplate) -> Option<prost_types::Stru
             "host_users".to_string(),
             Value {
                 kind: Some(Kind::BoolValue(!user_ns)),
+            },
+        );
+    }
+
+    if let Some(workspace) = template.persistent_workspace.as_ref() {
+        fields.insert(
+            "persistent_workspace_ref".to_string(),
+            Value {
+                kind: Some(Kind::StringValue(workspace.r#ref.clone())),
             },
         );
     }
@@ -1639,6 +1648,7 @@ pub async fn new_test_runtime(store: Arc<Store>) -> ComputeRuntime {
 mod tests {
     use super::*;
     use futures::stream;
+    use openshell_core::proto::PersistentWorkspace;
     use openshell_core::proto::compute::v1::{
         CreateSandboxResponse, DeleteSandboxResponse, GetCapabilitiesResponse, GetSandboxRequest,
         GetSandboxResponse, StopSandboxRequest, StopSandboxResponse, ValidateSandboxCreateResponse,
@@ -1800,6 +1810,29 @@ mod tests {
             sync_lock: Arc::new(Mutex::new(())),
             gateway_bind_addresses: Vec::new(),
         }
+    }
+
+    #[test]
+    fn build_platform_config_passes_persistent_workspace_ref() {
+        let config = build_platform_config(&SandboxTemplate {
+            persistent_workspace: Some(PersistentWorkspace {
+                r#ref: "agent-profile-00000000-0000-0000-0000-000000000001"
+                    .to_string(),
+            }),
+            ..SandboxTemplate::default()
+        })
+        .expect("platform_config should be present");
+
+        let value = config
+            .fields
+            .get("persistent_workspace_ref")
+            .expect("persistent workspace ref should be present");
+        assert_eq!(
+            value.kind.as_ref(),
+            Some(&prost_types::value::Kind::StringValue(
+                "agent-profile-00000000-0000-0000-0000-000000000001".to_string()
+            ))
+        );
     }
 
     fn register_test_supervisor_session(runtime: &ComputeRuntime, sandbox_id: &str) {

@@ -31,6 +31,8 @@ pub(super) const MAX_EXEC_COMMAND_ARGS: usize = 1024;
 pub(super) const MAX_EXEC_ARG_LEN: usize = 32 * 1024; // 32 KiB
 /// Maximum length of the workdir field (bytes).
 pub(super) const MAX_EXEC_WORKDIR_LEN: usize = 4096;
+/// Maximum length of an OpenShell persistent workspace reference.
+const MAX_PERSISTENT_WORKSPACE_REF_LEN: usize = 128;
 
 /// Validate fields of an `ExecSandboxRequest` for control characters and size
 /// limits before constructing a shell command string.
@@ -201,7 +203,48 @@ fn validate_sandbox_template(tmpl: &SandboxTemplate) -> Result<(), Status> {
         }
     }
 
+    if let Some(workspace) = tmpl.persistent_workspace.as_ref() {
+        validate_persistent_workspace_ref(
+            &workspace.r#ref,
+            "template.persistent_workspace.ref",
+        )?;
+        if tmpl.volume_claim_templates.is_some() {
+            return Err(Status::invalid_argument(
+                "template.persistent_workspace cannot be combined with template.volume_claim_templates",
+            ));
+        }
+    }
+
     Ok(())
+}
+
+fn validate_persistent_workspace_ref(value: &str, field_name: &str) -> Result<(), Status> {
+    if value.is_empty() {
+        return Err(Status::invalid_argument(format!("{field_name} must not be empty")));
+    }
+    if value.len() > MAX_PERSISTENT_WORKSPACE_REF_LEN {
+        return Err(Status::invalid_argument(format!(
+            "{field_name} exceeds maximum length ({} > {MAX_PERSISTENT_WORKSPACE_REF_LEN})",
+            value.len()
+        )));
+    }
+    if !is_persistent_workspace_ref(value) {
+        return Err(Status::invalid_argument(format!(
+            "{field_name} must contain only lowercase letters, digits, dots, underscores, or dashes, and must start and end with a letter or digit"
+        )));
+    }
+    Ok(())
+}
+
+fn is_persistent_workspace_ref(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(*b, b'.' | b'_' | b'-'))
 }
 
 /// Validate a `map<string, string>` field: entry count, key length, value length.
@@ -642,7 +685,7 @@ pub(super) fn level_matches(log_level: &str, min_level: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openshell_core::proto::SandboxSpec;
+    use openshell_core::proto::{PersistentWorkspace, SandboxSpec};
     use std::collections::HashMap;
     use tonic::Code;
 
@@ -818,6 +861,61 @@ mod tests {
         let err = validate_sandbox_spec("ok", &spec).unwrap_err();
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("template.resources"));
+    }
+
+    #[test]
+    fn validate_sandbox_spec_accepts_persistent_workspace_ref() {
+        let spec = SandboxSpec {
+            template: Some(SandboxTemplate {
+                persistent_workspace: Some(PersistentWorkspace {
+                    r#ref: "agent-profile-00000000-0000-0000-0000-000000000001"
+                        .to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_sandbox_spec("ok", &spec).is_ok());
+    }
+
+    #[test]
+    fn validate_sandbox_spec_rejects_invalid_persistent_workspace_ref() {
+        let spec = SandboxSpec {
+            template: Some(SandboxTemplate {
+                persistent_workspace: Some(PersistentWorkspace {
+                    r#ref: "Bad/Ref".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = validate_sandbox_spec("ok", &spec).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(
+            err.message()
+                .contains("template.persistent_workspace.ref")
+        );
+    }
+
+    #[test]
+    fn validate_sandbox_spec_rejects_persistent_workspace_with_volume_claim_templates() {
+        let spec = SandboxSpec {
+            template: Some(SandboxTemplate {
+                persistent_workspace: Some(PersistentWorkspace {
+                    r#ref: "agent-profile-00000000-0000-0000-0000-000000000001"
+                        .to_string(),
+                }),
+                volume_claim_templates: Some(prost_types::Struct::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = validate_sandbox_spec("ok", &spec).unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(
+            err.message()
+                .contains("template.persistent_workspace")
+        );
     }
 
     #[test]

@@ -263,6 +263,13 @@ message SandboxSpec {
   string gpu_device = 10;
 }
 
+// Durable OpenShell-managed workspace mounted into a sandbox.
+message PersistentWorkspace {
+  // Stable caller-owned workspace identity. The gateway maps this ref to a
+  // compute-platform volume and reuses that volume across sandbox lifetimes.
+  string ref = 1;
+}
+
 // Public sandbox template mapped onto compute-driver template inputs.
 message SandboxTemplate {
   // Fully-qualified OCI image reference used to boot the sandbox.
@@ -287,6 +294,8 @@ message SandboxTemplate {
   // available (beta through 1.35, GA in 1.36+) and a supporting runtime.
   // When unset, the cluster-wide default is used.
   optional bool user_namespaces = 10;
+  // Optional durable workspace mounted at /sandbox.
+  PersistentWorkspace persistent_workspace = 11;
 }
 
 // User-facing sandbox status derived by the gateway from compute-driver observations.
