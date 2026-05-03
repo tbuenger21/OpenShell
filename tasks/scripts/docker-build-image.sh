@@ -134,11 +134,8 @@ RUST_SCOPE=${RUST_TOOLCHAIN_SCOPE:-$(detect_rust_scope "${DOCKERFILE}")}
 CACHE_SCOPE_INPUT="v2|shared|release|${LOCK_HASH}|${RUST_SCOPE}"
 CARGO_TARGET_CACHE_SCOPE=$(printf '%s' "${CACHE_SCOPE_INPUT}" | sha256_16_stdin)
 
-# The cluster image embeds the packaged Helm chart.
-if [[ "${TARGET}" == "cluster" ]]; then
-	mkdir -p deploy/docker/.build/charts
-	helm package deploy/helm/openshell -d deploy/docker/.build/charts/ >/dev/null
-fi
+# The cluster image packages deploy/helm/openshell inside Docker so the chart
+# archive is produced in Linux and cannot inherit host OS metadata.
 
 K3S_ARGS=()
 if [[ "${TARGET}" == "cluster" && -n "${K3S_VERSION:-}" ]]; then

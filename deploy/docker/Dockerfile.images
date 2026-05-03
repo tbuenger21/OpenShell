@@ -290,6 +290,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     chmod +x /tmp/helm && \
     rm -rf /var/lib/apt/lists/*
 
+FROM helm AS openshell-chart
+WORKDIR /src
+COPY deploy/helm/openshell /src/openshell
+RUN mkdir -p /out && /tmp/helm package /src/openshell --destination /out
+
 FROM ubuntu:24.04 AS nvidia-container-toolkit
 ARG NVIDIA_CONTAINER_TOOLKIT_VERSION
 
@@ -347,7 +352,7 @@ RUN chmod +x /usr/local/bin/cluster-entrypoint.sh
 COPY deploy/docker/cluster-healthcheck.sh /usr/local/bin/cluster-healthcheck.sh
 RUN chmod +x /usr/local/bin/cluster-healthcheck.sh
 
-COPY deploy/docker/.build/charts/*.tgz /opt/openshell/charts/
+COPY --from=openshell-chart /out/*.tgz /opt/openshell/charts/
 COPY deploy/kube/manifests/*.yaml /opt/openshell/manifests/
 COPY deploy/kube/gpu-manifests/*.yaml /opt/openshell/gpu-manifests/
 

@@ -18,6 +18,7 @@ The cluster image is a single-container Kubernetes distribution that bundles the
 - **Docker target**: `cluster` in `deploy/docker/Dockerfile.images`
 - **Registry**: `ghcr.io/nvidia/openshell/cluster:latest`
 - **Pulled when**: `openshell gateway start`
+- **Chart packaging**: the cluster Docker build packages `deploy/helm/openshell` inside a Linux build stage before copying it into `/opt/openshell/charts/`.
 
 The supervisor binary (`openshell-sandbox`) is built by the shared `supervisor-builder` stage in `deploy/docker/Dockerfile.images` and placed at `/opt/openshell/bin/openshell-sandbox`. It is exposed to sandbox pods at runtime via a read-only `hostPath` volume mount — it is not baked into sandbox images.
 

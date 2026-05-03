@@ -238,7 +238,7 @@ Layers added:
 
 1. Custom entrypoint: `deploy/docker/cluster-entrypoint.sh` -> `/usr/local/bin/cluster-entrypoint.sh`
 2. Healthcheck script: `deploy/docker/cluster-healthcheck.sh` -> `/usr/local/bin/cluster-healthcheck.sh`
-3. Packaged Helm charts: `deploy/docker/.build/charts/*.tgz` -> `/var/lib/rancher/k3s/server/static/charts/`
+3. Helm chart packaged inside the Docker build: `deploy/helm/openshell` -> `/opt/openshell/charts/openshell-0.1.0.tgz`
 4. Kubernetes manifests: `deploy/kube/manifests/*.yaml` -> `/opt/openshell/manifests/`
 
 Bundled manifests include:
