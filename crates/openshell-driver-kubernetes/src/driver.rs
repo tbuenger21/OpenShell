@@ -130,6 +130,13 @@ const PERSISTENT_WORKSPACE_REF_ANNOTATION: &str = "openshell.ai/workspace-ref";
 /// Prefix for OpenShell-managed persistent workspace PVCs.
 const PERSISTENT_WORKSPACE_PVC_PREFIX: &str = "ows";
 
+/// Label-safe fingerprint length for persistent workspace refs.
+///
+/// Kubernetes label values are limited to 63 characters; a full SHA-256 hex
+/// digest is 64 characters.  We keep the full ref in an annotation and use this
+/// 128-bit prefix as the label-safe ownership fingerprint.
+const PERSISTENT_WORKSPACE_LABEL_HASH_LEN: usize = 32;
+
 #[derive(Clone)]
 pub struct KubernetesComputeDriver {
     client: Client,
@@ -1214,6 +1221,13 @@ fn persistent_workspace_ref_hash(workspace_ref: &str) -> String {
         .collect::<String>()
 }
 
+fn persistent_workspace_ref_label_hash(workspace_ref: &str) -> String {
+    persistent_workspace_ref_hash(workspace_ref)
+        .chars()
+        .take(PERSISTENT_WORKSPACE_LABEL_HASH_LEN)
+        .collect()
+}
+
 fn persistent_workspace_slug(workspace_ref: &str) -> String {
     let mut slug = String::new();
     let mut previous_dash = false;
@@ -1243,13 +1257,13 @@ fn persistent_workspace_slug(workspace_ref: &str) -> String {
 }
 
 fn persistent_workspace_claim(workspace_ref: &str, claim_name: &str) -> PersistentVolumeClaim {
-    let hash = persistent_workspace_ref_hash(workspace_ref);
+    let label_hash = persistent_workspace_ref_label_hash(workspace_ref);
     let mut labels = BTreeMap::new();
     labels.insert(
         SANDBOX_MANAGED_LABEL.to_string(),
         SANDBOX_MANAGED_VALUE.to_string(),
     );
-    labels.insert(PERSISTENT_WORKSPACE_HASH_LABEL.to_string(), hash);
+    labels.insert(PERSISTENT_WORKSPACE_HASH_LABEL.to_string(), label_hash);
 
     let mut annotations = BTreeMap::new();
     annotations.insert(
@@ -1300,11 +1314,27 @@ fn validate_persistent_workspace_claim(
         ));
     }
 
-    let expected_hash = persistent_workspace_ref_hash(workspace_ref);
+    let expected_hash = persistent_workspace_ref_label_hash(workspace_ref);
     if labels
         .get(PERSISTENT_WORKSPACE_HASH_LABEL)
         .map(String::as_str)
         != Some(expected_hash.as_str())
+    {
+        return Err(KubernetesDriverError::Precondition(
+            "persistent workspace PVC exists for a different workspace ref".to_string(),
+        ));
+    }
+
+    let annotations = claim.metadata.annotations.as_ref().ok_or_else(|| {
+        KubernetesDriverError::Precondition(
+            "persistent workspace PVC exists without OpenShell annotations".to_string(),
+        )
+    })?;
+
+    if annotations
+        .get(PERSISTENT_WORKSPACE_REF_ANNOTATION)
+        .map(String::as_str)
+        != Some(workspace_ref)
     {
         return Err(KubernetesDriverError::Precondition(
             "persistent workspace PVC exists for a different workspace ref".to_string(),
@@ -2894,7 +2924,23 @@ mod tests {
         );
         assert_eq!(
             labels.get(PERSISTENT_WORKSPACE_HASH_LABEL).map(String::as_str),
-            Some(persistent_workspace_ref_hash(workspace_ref).as_str())
+            Some(persistent_workspace_ref_label_hash(workspace_ref).as_str())
+        );
+        assert!(
+            labels
+                .get(PERSISTENT_WORKSPACE_HASH_LABEL)
+                .is_some_and(|value| value.len() <= 63)
+        );
+        let annotations = claim
+            .metadata
+            .annotations
+            .as_ref()
+            .expect("annotations should exist");
+        assert_eq!(
+            annotations
+                .get(PERSISTENT_WORKSPACE_REF_ANNOTATION)
+                .map(String::as_str),
+            Some(workspace_ref)
         );
         assert!(validate_persistent_workspace_claim(&claim, workspace_ref).is_ok());
     }

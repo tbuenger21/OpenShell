@@ -32,3 +32,6 @@ htmlcov
 *.log
 *.tmp
 .DS_Store
+._*
+**/.DS_Store
+**/._*
