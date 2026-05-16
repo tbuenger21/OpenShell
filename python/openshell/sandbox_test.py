@@ -10,6 +10,7 @@ from openshell._proto import openshell_pb2
 from openshell.sandbox import (
     _PYTHON_CLOUDPICKLE_BOOTSTRAP,
     _SANDBOX_PYTHON_BIN,
+    ExecResize,
     InferenceRouteClient,
     SandboxClient,
 )
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 class _FakeStub:
     def __init__(self) -> None:
         self.request: openshell_pb2.ExecSandboxRequest | None = None
+        self.interactive_requests: list[openshell_pb2.ExecSandboxInput] = []
 
     def ExecSandbox(
         self,
@@ -29,6 +31,20 @@ class _FakeStub:
     ):
         self.request = request
         _ = timeout
+        yield openshell_pb2.ExecSandboxEvent(
+            exit=openshell_pb2.ExecSandboxExit(exit_code=0)
+        )
+
+    def ExecSandboxInteractive(
+        self,
+        request_iterator: Any,
+        timeout: float | None = None,
+    ):
+        self.interactive_requests = list(request_iterator)
+        _ = timeout
+        yield openshell_pb2.ExecSandboxEvent(
+            stdout=openshell_pb2.ExecSandboxStdout(data=b"ready\n")
+        )
         yield openshell_pb2.ExecSandboxEvent(
             exit=openshell_pb2.ExecSandboxExit(exit_code=0)
         )
@@ -86,6 +102,47 @@ def test_exec_python_serializes_callable_payload() -> None:
     ]
     assert stub.request.environment["OPENSHELL_PYFUNC_B64"]
     assert stub.request.stdin == b""
+
+
+def test_exec_interactive_stream_sends_start_stdin_and_resize_frames() -> None:
+    stub = _FakeStub()
+    client = _client_with_fake_stub(stub)
+
+    result = None
+    for item in client.exec_interactive_stream(
+        "sandbox-1",
+        ["bash"],
+        workdir="/workspace",
+        input_stream=(
+            item for item in ("echo ok\n", ExecResize(cols=100, rows=30), b"exit\n")
+        ),
+        tty=True,
+        cols=120,
+        rows=40,
+    ):
+        if not hasattr(item, "data"):
+            result = item
+
+    assert result is not None
+    assert result.exit_code == 0
+    assert result.stdout == "ready\n"
+    assert len(stub.interactive_requests) == 4
+
+    start = stub.interactive_requests[0].start
+    assert stub.interactive_requests[0].WhichOneof("payload") == "start"
+    assert start.sandbox_id == "sandbox-1"
+    assert start.command == ["bash"]
+    assert start.workdir == "/workspace"
+    assert start.tty is True
+    assert start.cols == 120
+    assert start.rows == 40
+
+    assert stub.interactive_requests[1].WhichOneof("payload") == "stdin"
+    assert stub.interactive_requests[1].stdin == b"echo ok\n"
+    assert stub.interactive_requests[2].WhichOneof("payload") == "resize"
+    assert stub.interactive_requests[2].resize.cols == 100
+    assert stub.interactive_requests[2].resize.rows == 30
+    assert stub.interactive_requests[3].stdin == b"exit\n"
 
 
 def test_from_active_cluster_reads_gateway_metadata_layout(

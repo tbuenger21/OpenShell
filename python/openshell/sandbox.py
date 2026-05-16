@@ -24,7 +24,7 @@ from ._proto import (
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,15 @@ class ExecResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class ExecResize:
+    cols: int
+    rows: int
+
+
+ExecInput = bytes | str | ExecResize | openshell_pb2.ExecSandboxInput
 
 
 class SandboxError(RuntimeError):
@@ -107,6 +116,30 @@ class SandboxSession:
             workdir=workdir,
             env=env,
             timeout_seconds=timeout_seconds,
+        )
+
+    def exec_interactive_stream(
+        self,
+        command: Sequence[str],
+        *,
+        workdir: str | None = None,
+        env: Mapping[str, str] | None = None,
+        input_stream: Iterable[ExecInput] | None = None,
+        timeout_seconds: int | None = None,
+        tty: bool = True,
+        cols: int | None = None,
+        rows: int | None = None,
+    ) -> Iterator[ExecChunk | ExecResult]:
+        return self._client.exec_interactive_stream(
+            self.sandbox.id,
+            command,
+            workdir=workdir,
+            env=env,
+            input_stream=input_stream,
+            timeout_seconds=timeout_seconds,
+            tty=tty,
+            cols=cols,
+            rows=rows,
         )
 
     def delete(self) -> bool:
@@ -312,6 +345,43 @@ class SandboxClient:
             stdout=b"".join(stdout_parts).decode("utf-8", errors="replace"),
             stderr=b"".join(stderr_parts).decode("utf-8", errors="replace"),
         )
+
+    def exec_interactive_stream(
+        self,
+        sandbox_id: str,
+        command: Sequence[str],
+        *,
+        workdir: str | None = None,
+        env: Mapping[str, str] | None = None,
+        input_stream: Iterable[ExecInput] | None = None,
+        timeout_seconds: int | None = None,
+        tty: bool = True,
+        cols: int | None = None,
+        rows: int | None = None,
+    ) -> Iterator[ExecChunk | ExecResult]:
+        if not command:
+            raise SandboxError("command must not be empty")
+
+        request = openshell_pb2.ExecSandboxRequest(
+            sandbox_id=sandbox_id,
+            command=list(command),
+            workdir=workdir or "",
+            environment=dict(env or {}),
+            timeout_seconds=timeout_seconds or 0,
+            tty=tty,
+            cols=cols or 0,
+            rows=rows or 0,
+        )
+
+        grpc_deadline: float | None = None
+        if timeout_seconds:
+            grpc_deadline = max(float(timeout_seconds + 10), self._timeout)
+
+        stream = self._stub.ExecSandboxInteractive(
+            _interactive_exec_inputs(request, input_stream),
+            timeout=grpc_deadline,
+        )
+        yield from _exec_events_to_results(stream)
 
     def exec(
         self,
@@ -525,6 +595,31 @@ class Sandbox:
             timeout_seconds=timeout_seconds,
         )
 
+    def exec_interactive_stream(
+        self,
+        command: Sequence[str],
+        *,
+        workdir: str | None = None,
+        env: Mapping[str, str] | None = None,
+        input_stream: Iterable[ExecInput] | None = None,
+        timeout_seconds: int | None = None,
+        tty: bool = True,
+        cols: int | None = None,
+        rows: int | None = None,
+    ) -> Iterator[ExecChunk | ExecResult]:
+        if self._session is None:
+            raise SandboxError("sandbox context has not been entered")
+        return self._session.exec_interactive_stream(
+            command,
+            workdir=workdir,
+            env=env,
+            input_stream=input_stream,
+            timeout_seconds=timeout_seconds,
+            tty=tty,
+            cols=cols,
+            rows=rows,
+        )
+
     def exec_python(
         self,
         function: Callable[..., object],
@@ -573,6 +668,57 @@ def _serialize_python_callable(
 
     payload = cloudpickle.dumps((function, tuple(args), dict(kwargs or {})))
     return base64.b64encode(payload).decode("ascii")
+
+
+def _interactive_exec_inputs(
+    request: openshell_pb2.ExecSandboxRequest,
+    input_stream: Iterable[ExecInput] | None,
+) -> Iterator[openshell_pb2.ExecSandboxInput]:
+    yield openshell_pb2.ExecSandboxInput(start=request)
+    for item in input_stream or ():
+        if isinstance(item, openshell_pb2.ExecSandboxInput):
+            yield item
+        elif isinstance(item, ExecResize):
+            yield openshell_pb2.ExecSandboxInput(
+                resize=openshell_pb2.ExecSandboxWindowResize(
+                    cols=item.cols,
+                    rows=item.rows,
+                )
+            )
+        elif isinstance(item, str):
+            yield openshell_pb2.ExecSandboxInput(stdin=item.encode())
+        else:
+            yield openshell_pb2.ExecSandboxInput(stdin=bytes(item))
+
+
+def _exec_events_to_results(
+    stream: Iterable[openshell_pb2.ExecSandboxEvent],
+) -> Iterator[ExecChunk | ExecResult]:
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
+    exit_code: int | None = None
+
+    for event in stream:
+        payload = event.WhichOneof("payload")
+        if payload == "stdout":
+            data = bytes(event.stdout.data)
+            stdout_parts.append(data)
+            yield ExecChunk(stream="stdout", data=data)
+        elif payload == "stderr":
+            data = bytes(event.stderr.data)
+            stderr_parts.append(data)
+            yield ExecChunk(stream="stderr", data=data)
+        elif payload == "exit":
+            exit_code = int(event.exit.exit_code)
+
+    if exit_code is None:
+        raise SandboxError("ExecSandbox stream ended without an exit event")
+
+    yield ExecResult(
+        exit_code=exit_code,
+        stdout=b"".join(stdout_parts).decode("utf-8", errors="replace"),
+        stderr=b"".join(stderr_parts).decode("utf-8", errors="replace"),
+    )
 
 
 def _sandbox_ref(sandbox: openshell_pb2.Sandbox) -> SandboxRef:
