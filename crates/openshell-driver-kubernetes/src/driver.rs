@@ -390,7 +390,6 @@ impl KubernetesComputeDriver {
         }
     }
 
-
     pub async fn create_sandbox(&self, sandbox: &Sandbox) -> Result<(), KubernetesDriverError> {
         let name = sandbox.name.as_str();
         info!(
@@ -1343,7 +1342,6 @@ fn validate_persistent_workspace_claim(
 
     Ok(())
 }
-
 
 fn sandbox_to_k8s_spec(
     spec: Option<&SandboxSpec>,
@@ -2856,7 +2854,7 @@ mod tests {
         assert_eq!(tolerations[0]["effect"], "NoSchedule");
     }
 
-    
+
     #[test]
     fn persistent_workspace_mounts_derived_claim_without_vct() {
         let workspace_ref = "agent-profile-00000000-0000-0000-0000-000000000001";
@@ -2877,14 +2875,14 @@ mod tests {
             template: Some(template),
             ..SandboxSpec::default()
         };
-    
+
         let root = sandbox_to_k8s_spec(Some(&spec), &SandboxPodParams::default());
-    
+
         assert!(
             root["spec"]["volumeClaimTemplates"].is_null(),
             "persistent workspace must not create sandbox-owned VCTs"
         );
-    
+
         let pod_spec = &root["spec"]["podTemplate"]["spec"];
         let workspace_volume = pod_spec["volumes"]
             .as_array()
@@ -2896,7 +2894,7 @@ mod tests {
             workspace_volume["persistentVolumeClaim"]["claimName"],
             persistent_workspace_claim_name(workspace_ref)
         );
-    
+
         let agent_mount = pod_spec["containers"][0]["volumeMounts"]
             .as_array()
             .expect("agent volumeMounts should exist")
@@ -2904,18 +2902,18 @@ mod tests {
             .find(|mount| mount["name"] == WORKSPACE_VOLUME_NAME)
             .expect("workspace mount should exist");
         assert_eq!(agent_mount["mountPath"], WORKSPACE_MOUNT_PATH);
-    
+
         let init_mount = &pod_spec["initContainers"][0]["volumeMounts"][0];
         assert_eq!(init_mount["name"], WORKSPACE_VOLUME_NAME);
         assert_eq!(init_mount["mountPath"], WORKSPACE_INIT_MOUNT_PATH);
     }
-    
+
     #[test]
     fn persistent_workspace_claim_uses_openshell_ownership_labels() {
         let workspace_ref = "agent-profile-00000000-0000-0000-0000-000000000001";
         let claim_name = persistent_workspace_claim_name(workspace_ref);
         let claim = persistent_workspace_claim(workspace_ref, &claim_name);
-    
+
         assert_eq!(claim.metadata.name.as_deref(), Some(claim_name.as_str()));
         let labels = claim.metadata.labels.as_ref().expect("labels should exist");
         assert_eq!(
