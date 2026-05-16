@@ -242,9 +242,9 @@ fn is_persistent_workspace_ref(value: &str) -> bool {
         .first()
         .is_some_and(u8::is_ascii_alphanumeric)
         && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(*b, b'.' | b'_' | b'-'))
+        && bytes.iter().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(*b, b'.' | b'_' | b'-')
+        })
 }
 
 /// Validate a `map<string, string>` field: entry count, key length, value length.
