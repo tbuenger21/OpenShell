@@ -5,8 +5,8 @@
 
 use crate::policy::{LandlockCompatibility, SandboxPolicy};
 use landlock::{
-    ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, PathFdError, Ruleset,
-    RulesetAttr, RulesetCreatedAttr,
+    ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, PathFdError,
+    Ruleset, RulesetAttr, RulesetCreatedAttr,
 };
 use miette::{IntoDiagnostic, Result};
 use std::path::{Path, PathBuf};
@@ -140,6 +140,8 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
     let result: Result<PreparedRuleset> = (|| {
         let access_all = AccessFs::from_all(abi);
         let access_read = AccessFs::from_read(abi);
+        let access_file_all = AccessFs::from_file(abi);
+        let access_file_read = access_read & access_file_all;
 
         let mut ruleset = Ruleset::default();
         ruleset = ruleset
@@ -152,9 +154,10 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
 
         for path in &read_only {
             if let Some(path_fd) = try_open_path(path, compatibility)? {
-                debug!(path = %path.display(), "Landlock allow read-only");
+                let access = access_for_path(path, access_read, access_file_read);
+                debug!(path = %path.display(), ?access, "Landlock allow read-only");
                 ruleset = ruleset
-                    .add_rule(PathBeneath::new(path_fd, access_read))
+                    .add_rule(PathBeneath::new(path_fd, access))
                     .into_diagnostic()?;
                 rules_applied += 1;
             }
@@ -162,9 +165,10 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
 
         for path in &read_write {
             if let Some(path_fd) = try_open_path(path, compatibility)? {
-                debug!(path = %path.display(), "Landlock allow read-write");
+                let access = access_for_path(path, access_all, access_file_all);
+                debug!(path = %path.display(), ?access, "Landlock allow read-write");
                 ruleset = ruleset
-                    .add_rule(PathBeneath::new(path_fd, access_all))
+                    .add_rule(PathBeneath::new(path_fd, access))
                     .into_diagnostic()?;
                 rules_applied += 1;
             }
@@ -278,6 +282,18 @@ pub fn apply(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<()> {
         enforce(prepared)?;
     }
     Ok(())
+}
+
+fn access_for_path(
+    path: &Path,
+    directory_access: BitFlags<AccessFs>,
+    file_access: BitFlags<AccessFs>,
+) -> BitFlags<AccessFs> {
+    if path.is_dir() {
+        directory_access
+    } else {
+        file_access
+    }
 }
 
 /// Attempt to open a path for Landlock rule creation.
@@ -413,6 +429,38 @@ mod tests {
         let result = try_open_path(dir.path(), &LandlockCompatibility::BestEffort);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn read_only_file_access_excludes_directory_only_rights() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("urandom-like-file");
+        std::fs::write(&file_path, b"random").unwrap();
+
+        let abi = ABI::V2;
+        let access_read = AccessFs::from_read(abi);
+        let access_file_read = access_read & AccessFs::from_file(abi);
+
+        let access = access_for_path(&file_path, access_read, access_file_read);
+
+        assert!(access.contains(AccessFs::ReadFile));
+        assert!(access.contains(AccessFs::Execute));
+        assert!(!access.contains(AccessFs::ReadDir));
+    }
+
+    #[test]
+    fn read_only_directory_access_keeps_directory_rights() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let abi = ABI::V2;
+        let access_read = AccessFs::from_read(abi);
+        let access_file_read = access_read & AccessFs::from_file(abi);
+
+        let access = access_for_path(dir.path(), access_read, access_file_read);
+
+        assert!(access.contains(AccessFs::ReadFile));
+        assert!(access.contains(AccessFs::Execute));
+        assert!(access.contains(AccessFs::ReadDir));
     }
 
     #[test]
