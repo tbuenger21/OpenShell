@@ -46,19 +46,9 @@ description = "Build multi-arch gateway and supervisor images and push to a regi
 run = "tasks/scripts/docker-publish-multiarch.sh"
 hide = true
 
-["build:docker:cluster-base"]
-description = "Build the multi-arch cluster base image and push to a registry"
-run = "tasks/scripts/docker-publish-cluster-base.sh"
-hide = true
-
 ["docker:build:multiarch"]
 description = "Alias for build:docker:multiarch"
 depends = ["build:docker:multiarch"]
-hide = true
-
-["docker:build:cluster-base"]
-description = "Alias for build:docker:cluster-base"
-depends = ["build:docker:cluster-base"]
 hide = true
 
 ["docker:cleanup"]
