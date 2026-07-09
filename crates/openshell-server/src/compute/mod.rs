@@ -1111,7 +1111,7 @@ fn derive_phase(status: Option<&DriverSandboxStatus>) -> SandboxPhase {
                 return if condition.status.eq_ignore_ascii_case("true") {
                     SandboxPhase::Ready
                 } else if condition.status.eq_ignore_ascii_case("false") {
-                    if is_terminal_failure_reason(&condition.reason) {
+                    if is_terminal_failure_condition(condition) {
                         SandboxPhase::Error
                     } else {
                         SandboxPhase::Provisioning
@@ -1149,6 +1149,25 @@ fn is_terminal_failure_reason(reason: &str) -> bool {
     let reason = reason.to_ascii_lowercase();
     let transient_reasons = ["reconcilererror", "dependenciesnotready", "starting"];
     !transient_reasons.contains(&reason.as_str())
+}
+
+fn is_terminal_failure_condition(condition: &DriverCondition) -> bool {
+    is_terminal_failure_reason(&condition.reason)
+        || condition_message_mentions_terminal_failure(&condition.message)
+}
+
+fn condition_message_mentions_terminal_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "errimageneverpull",
+        "errimagepull",
+        "imagepullbackoff",
+        "crashloopbackoff",
+        "failed to pull image",
+        "pull access denied",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 #[cfg(test)]
@@ -1330,6 +1349,7 @@ mod tests {
             ("CrashLoopBackOff", "Container keeps crashing"),
             ("ImagePullBackOff", "Failed to pull image"),
             ("ErrImagePull", "Error pulling image"),
+            ("ErrImageNeverPull", "Image is not present locally"),
             ("Unschedulable", "No nodes match"),
             ("SomeOtherReason", "Any other reason is terminal"),
         ];
@@ -1411,6 +1431,16 @@ mod tests {
         let status = make_driver_status(make_driver_condition(
             "ImagePullBackOff",
             "Failed to pull image",
+        ));
+
+        assert_eq!(derive_phase(Some(&status)), SandboxPhase::Error);
+    }
+
+    #[test]
+    fn derive_phase_returns_error_when_transient_reason_mentions_image_pull_failure() {
+        let status = make_driver_status(make_driver_condition(
+            "DependenciesNotReady",
+            "Pod exists with phase: Pending; container agent is waiting: ErrImageNeverPull",
         ));
 
         assert_eq!(derive_phase(Some(&status)), SandboxPhase::Error);
