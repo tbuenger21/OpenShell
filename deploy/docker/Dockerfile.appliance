@@ -1,0 +1,28 @@
+ARG OPENSHELL_APPLIANCE_RUNTIME_BASE_IMAGE=rancher/k3s:v1.33.1-k3s1
+FROM ${OPENSHELL_APPLIANCE_RUNTIME_BASE_IMAGE}
+
+COPY deploy/appliance/entrypoint.sh /usr/local/bin/openshell-appliance-entrypoint.sh
+COPY deploy/appliance/image-cache.sh /usr/local/bin/openshell-image-cache.sh
+COPY deploy/appliance/healthcheck.sh /usr/local/bin/openshell-appliance-healthcheck.sh
+COPY openshell-assets/ /opt/openshell/assets/
+COPY openshell-image-bundle/ /opt/openshell/image-bundle/
+
+ENV OPENSHELL_APPLIANCE_ASSET_DIR=/opt/openshell/assets
+ENV OPENSHELL_IMAGE_BUNDLE=/opt/openshell/image-bundle
+ENV OPENSHELL_IMAGE_CACHE_COMPLETE_FILE=/var/run/openshell/image-cache-complete
+ENV OPENSHELL_IMAGE_CACHE_REQUIRED=1
+ENV OPENSHELL_IMAGE_CACHE_RECONCILE_INTERVAL_S=300
+ENV OPENSHELL_IMAGE_CACHE_DISK_MIN_FREE_PERCENT=10
+ENV OPENSHELL_GATEWAY_IMAGE_PULL_POLICY=Never
+ENV OPENSHELL_SANDBOX_IMAGE_PULL_POLICY=Never
+ENV OPENSHELL_SUPERVISOR_IMAGE_PULL_POLICY=Never
+ENV OPENSHELL_AGENT_SANDBOX_CONTROLLER_IMAGE_PULL_POLICY=Never
+
+RUN chmod +x \
+    /usr/local/bin/openshell-appliance-entrypoint.sh \
+    /usr/local/bin/openshell-image-cache.sh \
+    /usr/local/bin/openshell-appliance-healthcheck.sh
+
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/openshell-appliance-entrypoint.sh"]
+CMD ["server", "--disable=traefik", "--tls-san=127.0.0.1", "--tls-san=localhost", "--tls-san=host.docker.internal"]
+
