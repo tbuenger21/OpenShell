@@ -7,7 +7,7 @@ OpenShell produces two container images, both published for `linux/amd64` and `l
 The gateway runs the control plane API server. It is deployed as a StatefulSet inside the cluster container via a bundled Helm chart.
 
 - **Docker target**: `gateway` in `deploy/docker/Dockerfile.images`
-- **Registry**: `ghcr.io/nvidia/openshell/gateway:latest`
+- **Registry**: `ghcr.io/nvidia/openshell/gateway:<version-or-digest>`
 - **Pulled when**: Cluster startup (the Helm chart triggers the pull)
 - **Entrypoint**: `openshell-gateway --port 8080` (gRPC + HTTP, mTLS)
 
@@ -16,7 +16,7 @@ The gateway runs the control plane API server. It is deployed as a StatefulSet i
 The cluster image is a single-container Kubernetes distribution that bundles the Helm charts, Kubernetes manifests, and the `openshell-sandbox` supervisor binary needed to bootstrap the control plane.
 
 - **Docker target**: `cluster` in `deploy/docker/Dockerfile.images`
-- **Registry**: `ghcr.io/nvidia/openshell/cluster:latest`
+- **Registry**: `ghcr.io/nvidia/openshell/cluster:<version-or-digest>`
 - **Pulled when**: `openshell gateway start`
 
 The supervisor binary (`openshell-sandbox`) is built by the shared `supervisor-builder` stage in `deploy/docker/Dockerfile.images` and placed at `/opt/openshell/bin/openshell-sandbox`. It is exposed to sandbox pods at runtime via a read-only `hostPath` volume mount — it is not baked into sandbox images.
@@ -32,6 +32,11 @@ OpenShell also publishes a standalone `openshell-gateway` binary as a GitHub rel
 - **Installer**: None yet. The binary is a manual-download asset.
 
 Both the standalone artifact and the deployed container image use the `openshell-gateway` binary.
+
+Release builds publish source-SHA candidates first, test the registry artifacts,
+attach provenance/SBOM attestations, and sign them with a protected local Cosign
+key before promoting a version alias. `latest` is an explicit operator promotion,
+not the default deployment input. See [Release Pipeline](release-pipeline.md).
 
 ## Python Wheels
 

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+
+# Shared release metadata and registry guard helpers.
+
+canonical_image_source_url() {
+  local source_root="$1"
+  local source_url scheme remainder authority path host
+
+  source_url="${OPENSHELL_IMAGE_SOURCE_URL:-}"
+  if [[ -z "$source_url" ]]; then
+    source_url="$(git -C "$source_root" config --get remote.origin.url 2>/dev/null || true)"
+  fi
+  # Git remotes should not include either component, but an override might.
+  # Strip both before parsing so credentials cannot reach OCI labels.
+  source_url="${source_url%%\?*}"
+  source_url="${source_url%%\#*}"
+  source_url="${source_url%.git}"
+  if [[ -z "$source_url" ]]; then
+    echo "unable to determine image source URL; set OPENSHELL_IMAGE_SOURCE_URL" >&2
+    return 1
+  fi
+
+  case "$source_url" in
+    https://*|http://*)
+      scheme="${source_url%%://*}"
+      remainder="${source_url#*://}"
+      if [[ "$remainder" == */* ]]; then
+        authority="${remainder%%/*}"
+        path="/${remainder#*/}"
+      else
+        authority="$remainder"
+        path=""
+      fi
+      # OCI metadata must never include Git credentials or access tokens.
+      authority="${authority##*@}"
+      if [[ -z "$authority" || -z "$path" ]]; then
+        echo "image source URL must include a host and repository path" >&2
+        return 1
+      fi
+      printf '%s://%s%s\n' "$scheme" "$authority" "$path"
+      ;;
+    git@*:* )
+      remainder="${source_url#git@}"
+      host="${remainder%%:*}"
+      path="${remainder#*:}"
+      if [[ -z "$host" || -z "$path" ]]; then
+        echo "invalid Git SSH source URL" >&2
+        return 1
+      fi
+      printf 'https://%s/%s\n' "$host" "$path"
+      ;;
+    ssh://git@*/*)
+      remainder="${source_url#ssh://git@}"
+      host="${remainder%%/*}"
+      path="${remainder#*/}"
+      host="${host%%:*}"
+      if [[ -z "$host" || -z "$path" ]]; then
+        echo "invalid Git SSH source URL" >&2
+        return 1
+      fi
+      printf 'https://%s/%s\n' "$host" "$path"
+      ;;
+    *)
+      echo "image source URL must be an http(s) or Git SSH repository URL" >&2
+      return 1
+      ;;
+  esac
+}
+
+require_source_sha_candidate_tag() {
+  local image_tag="$1"
+  local source_revision="$2"
+  local expected_tag="sha-${source_revision}"
+
+  if [[ "$image_tag" != "$expected_tag" ]]; then
+    echo "candidate tag must be $expected_tag for the checked-out source revision" >&2
+    return 1
+  fi
+}
+
+image_ref_exists() {
+  local image_ref="$1"
+  local inspection_output
+
+  if inspection_output="$(docker buildx imagetools inspect "$image_ref" 2>&1)"; then
+    return 0
+  fi
+
+  # Only the Buildx not-found response that names this exact reference proves
+  # absence. Auth, credential-helper, network, and registry failures must stop
+  # a release rather than permit replacement.
+  case "$inspection_output" in
+    "ERROR: ${image_ref}: not found"|"ERROR: ${image_ref}: manifest unknown"|"ERROR: ${image_ref}: name unknown")
+      return 1
+      ;;
+    *)
+      echo "unable to determine whether release image exists; refusing to publish: $image_ref" >&2
+      return 2
+      ;;
+  esac
+}
+
+require_new_image_ref() {
+  local image_ref="$1"
+  local inspection_status=0
+
+  image_ref_exists "$image_ref" || inspection_status=$?
+  if [[ "$inspection_status" -eq 0 ]]; then
+    echo "refusing to replace an existing release image: $image_ref" >&2
+    return 1
+  fi
+  if [[ "$inspection_status" -eq 1 ]]; then
+    return 0
+  fi
+  return "$inspection_status"
+}
+
+is_moving_image_alias() {
+  case "$1" in
+    dev|latest|edge|nightly) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_new_release_alias() {
+  local image_ref="$1"
+  local alias="$2"
+
+  if is_moving_image_alias "$alias"; then
+    return 0
+  fi
+  require_new_image_ref "$image_ref"
+}
