@@ -279,6 +279,7 @@ When environment variables are set, the entrypoint modifies the HelmChart manife
 - `IMAGE_REPO_BASE`: Rewrites `repository:`, `sandboxImage:`, and `jobImage:` in the HelmChart.
 - `PUSH_IMAGE_REFS`: In push mode, parses comma-separated image refs and rewrites the exact gateway, sandbox, and pki-job image references (matching on path component `/gateway:`, `/sandbox:`, `/pki-job:`).
 - `IMAGE_TAG`: Replaces `:latest` tags with the specified tag on gateway, sandbox, and pki-job images. Handles both quoted and unquoted `tag: latest` formats.
+- `OPENSHELL_GATEWAY_IMAGE`: Requires a digest-pinned gateway reference and writes it to the Helm values. That digest takes precedence over `IMAGE_TAG` for release E2E.
 - `IMAGE_PULL_POLICY`: Replaces `pullPolicy: Always` with the specified policy (e.g., `IfNotPresent`).
 - `SSH_GATEWAY_HOST` / `SSH_GATEWAY_PORT`: Replaces `__SSH_GATEWAY_HOST__` and `__SSH_GATEWAY_PORT__` placeholders.
 - `EXTRA_SANS`: Builds a YAML flow-style list from the comma-separated SANs and replaces `extraSANs: []`.
@@ -408,6 +409,7 @@ Variables set on the container by `ensure_container()` in `docker.rs`:
 | `SSH_GATEWAY_HOST` | Resolved remote hostname/IP | Remote deploys only |
 | `SSH_GATEWAY_PORT` | Configured host port (default `8080`) | Remote deploys only |
 | `IMAGE_TAG` | Image tag (e.g., `"dev"`) | When `IMAGE_TAG` env is set or push mode |
+| `OPENSHELL_GATEWAY_IMAGE` | Digest-pinned gateway image ref | Release E2E only |
 | `IMAGE_PULL_POLICY` | `"IfNotPresent"` | Push mode only |
 | `PUSH_IMAGE_REFS` | Comma-separated image refs | Push mode only |
 
@@ -418,6 +420,7 @@ Environment variables that affect bootstrap behavior when set on the host:
 | Variable | Effect |
 |---|---|
 | `OPENSHELL_CLUSTER_IMAGE` | Overrides entire image ref if set and non-empty |
+| `OPENSHELL_GATEWAY_IMAGE` | Pins the gateway pod image to an exact digest |
 | `IMAGE_TAG` | Sets image tag (default: `"dev"`) when `OPENSHELL_CLUSTER_IMAGE` is not set |
 | `NAV_GATEWAY_TLS_ENABLED` | Overrides HelmChart manifest for TLS enabled check (`true`/`1`/`yes`/`false`/`0`/`no`) |
 | `XDG_CONFIG_HOME` | Base config directory (default: `$HOME/.config`) |

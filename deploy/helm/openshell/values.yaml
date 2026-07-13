@@ -9,6 +9,9 @@ image:
   repository: ghcr.io/nvidia/openshell/gateway
   pullPolicy: Always
   tag: "latest"
+  # When set, the digest takes precedence over tag so a deployment can pin the
+  # exact multi-platform manifest it was tested against.
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""

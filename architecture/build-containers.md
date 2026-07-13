@@ -35,8 +35,9 @@ Both the standalone artifact and the deployed container image use the `openshell
 
 Release builds publish source-SHA candidates first, test the registry artifacts,
 attach provenance/SBOM attestations, and sign them with a protected local Cosign
-key before promoting a version alias. `latest` is an explicit operator promotion,
-not the default deployment input. See [Release Pipeline](release-pipeline.md).
+key before promoting a semantic version and optional moving aliases. `latest` is
+an explicit operator promotion, not the default deployment input. See [Release
+Pipeline](release-pipeline.md).
 
 ## Python Wheels
 

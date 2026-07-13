@@ -461,6 +461,29 @@ if [ -n "${IMAGE_TAG:-}" ] && [ -f "$HELMCHART" ]; then
     sed -i -E "s|tag:[[:space:]]*\"?latest\"?|tag: \"${IMAGE_TAG}\"|" "$HELMCHART"
 fi
 
+# A release test supplies the exact gateway manifest digest.  The digest takes
+# precedence over IMAGE_TAG so the in-cluster workload cannot follow a moved
+# candidate tag between candidate publication and E2E execution.
+if [ -n "${OPENSHELL_GATEWAY_IMAGE:-}" ] && [ -f "$HELMCHART" ]; then
+    case "$OPENSHELL_GATEWAY_IMAGE" in
+        *@sha256:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+            gateway_repo="${OPENSHELL_GATEWAY_IMAGE%@*}"
+            gateway_digest="${OPENSHELL_GATEWAY_IMAGE#*@}"
+            ;;
+        *)
+            echo "OPENSHELL_GATEWAY_IMAGE must be a digest-pinned image reference" >&2
+            exit 1
+            ;;
+    esac
+    if ! printf '%s' "$gateway_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+        echo "OPENSHELL_GATEWAY_IMAGE has an invalid digest: ${OPENSHELL_GATEWAY_IMAGE}" >&2
+        exit 1
+    fi
+    echo "Pinning gateway image to: ${gateway_repo}@${gateway_digest}"
+    sed -i -E "s|repository:[[:space:]]*[^[:space:]]+|repository: ${gateway_repo}|" "$HELMCHART"
+    sed -i -E "s|digest:[[:space:]]*\"?[^\"[:space:]]*\"?|digest: \"${gateway_digest}\"|" "$HELMCHART"
+fi
+
 if [ -f "$HELMCHART" ]; then
     IMAGE_PULL_POLICY_VALUE="${IMAGE_PULL_POLICY:-Always}"
     if [ -n "${IMAGE_PULL_POLICY:-}" ]; then
