@@ -21,6 +21,8 @@ The cluster image is a single-container Kubernetes distribution that bundles the
 
 The supervisor binary (`openshell-sandbox`) is built by the shared `supervisor-builder` stage in `deploy/docker/Dockerfile.images` and placed at `/opt/openshell/bin/openshell-sandbox`. It is exposed to sandbox pods at runtime via a read-only `hostPath` volume mount — it is not baked into sandbox images.
 
+The Potatostew appliance uses k3s as its runtime base rather than this cluster image. Its Dockerfile copies the same binary from the selected immutable supervisor image into that node path, so appliance-hosted sandbox pods receive the supervisor too.
+
 ## Standalone Gateway Binary
 
 OpenShell also publishes a standalone `openshell-gateway` binary as a GitHub release asset.

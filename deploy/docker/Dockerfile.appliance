@@ -1,6 +1,13 @@
 ARG OPENSHELL_APPLIANCE_RUNTIME_BASE_IMAGE=rancher/k3s:v1.33.1-k3s1
+ARG OPENSHELL_APPLIANCE_SUPERVISOR_IMAGE
+
+# The appliance runs k3s directly, so its filesystem is the Kubernetes node
+# filesystem. Sandbox pods mount this binary through a read-only hostPath.
+FROM ${OPENSHELL_APPLIANCE_SUPERVISOR_IMAGE} AS openshell-supervisor
+
 FROM ${OPENSHELL_APPLIANCE_RUNTIME_BASE_IMAGE}
 
+COPY --from=openshell-supervisor /usr/local/bin/openshell-sandbox /opt/openshell/bin/openshell-sandbox
 COPY deploy/appliance/entrypoint.sh /usr/local/bin/openshell-appliance-entrypoint.sh
 COPY deploy/appliance/image-cache.sh /usr/local/bin/openshell-image-cache.sh
 COPY deploy/appliance/healthcheck.sh /usr/local/bin/openshell-appliance-healthcheck.sh
@@ -19,10 +26,10 @@ ENV OPENSHELL_SUPERVISOR_IMAGE_PULL_POLICY=Never
 ENV OPENSHELL_AGENT_SANDBOX_CONTROLLER_IMAGE_PULL_POLICY=Never
 
 RUN chmod +x \
+    /opt/openshell/bin/openshell-sandbox \
     /usr/local/bin/openshell-appliance-entrypoint.sh \
     /usr/local/bin/openshell-image-cache.sh \
     /usr/local/bin/openshell-appliance-healthcheck.sh
 
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/openshell-appliance-entrypoint.sh"]
 CMD ["server", "--disable=traefik", "--tls-san=127.0.0.1", "--tls-san=localhost", "--tls-san=host.docker.internal"]
-

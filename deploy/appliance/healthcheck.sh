@@ -42,6 +42,11 @@ if [ "$REQUIRE_IMAGE_CACHE" = "1" ]; then
     fi
 fi
 
+if [ ! -x /opt/openshell/bin/openshell-sandbox ]; then
+    log "sandbox supervisor binary is missing: /opt/openshell/bin/openshell-sandbox"
+    exit 1
+fi
+
 ready="$(
     KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$OPENSHELL_NAMESPACE" \
         get statefulset openshell \
@@ -57,4 +62,3 @@ if ! gateway_port_is_reachable; then
     log "OpenShell gateway port is not reachable: $GATEWAY_PROBE_URL"
     exit 1
 fi
-
