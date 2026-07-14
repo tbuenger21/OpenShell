@@ -7,9 +7,10 @@ import base64
 import json
 import os
 import pathlib
+import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -55,8 +56,29 @@ class ExecResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class SshSession:
+    """Short-lived gateway tunnel credentials for one sandbox SSH session."""
+
+    sandbox_id: str
+    token: str = field(repr=False)
+    gateway_host: str
+    gateway_port: int
+    gateway_scheme: str
+    connect_path: str
+    host_key_fingerprint: str
+    expires_at_ms: int
+
+
 class SandboxError(RuntimeError):
     pass
+
+
+_SSH_SANDBOX_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_SSH_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~+/=-]{1,4096}$")
+_SSH_GATEWAY_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.\-:\[\]]{1,253}$")
+_SSH_CONNECT_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@/%-]{0,2047}$")
+_SSH_FINGERPRINT_PATTERN = re.compile(r"^[A-Za-z0-9:+/=-]{1,256}$")
 
 
 class SandboxSession:
@@ -109,6 +131,10 @@ class SandboxSession:
             env=env,
             timeout_seconds=timeout_seconds,
         )
+
+    def create_ssh_session(self) -> SshSession:
+        """Create short-lived SSH tunnel credentials for this sandbox."""
+        return self._client.create_ssh_session(self.sandbox.id)
 
     def delete(self) -> bool:
         return self._client.delete(self.sandbox.name)
@@ -258,6 +284,29 @@ class SandboxClient:
                 raise SandboxError(f"sandbox {sandbox_name} entered error phase")
             time.sleep(1)
         raise SandboxError(f"sandbox {sandbox_name} was not ready within timeout")
+
+    def create_ssh_session(self, sandbox_id: str) -> SshSession:
+        """Create validated, short-lived SSH tunnel credentials for a sandbox."""
+        _validate_ssh_sandbox_id(sandbox_id)
+        response = self._stub.CreateSshSession(
+            openshell_pb2.CreateSshSessionRequest(sandbox_id=sandbox_id),
+            timeout=self._timeout,
+        )
+        session = _ssh_session_from_response(response)
+        if session.sandbox_id != sandbox_id:
+            raise SandboxError(
+                "CreateSshSession returned credentials for a different sandbox"
+            )
+        return session
+
+    def revoke_ssh_session(self, token: str) -> bool:
+        """Revoke a short-lived SSH tunnel token when its client disconnects."""
+        _validate_ssh_token(token)
+        response = self._stub.RevokeSshSession(
+            openshell_pb2.RevokeSshSessionRequest(token=token),
+            timeout=self._timeout,
+        )
+        return bool(response.revoked)
 
     def exec_stream(
         self,
@@ -582,6 +631,61 @@ def _sandbox_ref(sandbox: openshell_pb2.Sandbox) -> SandboxRef:
         namespace=sandbox.namespace,
         phase=sandbox.phase,
     )
+
+
+def _ssh_session_from_response(
+    response: openshell_pb2.CreateSshSessionResponse,
+) -> SshSession:
+    sandbox_id = str(response.sandbox_id)
+    token = str(response.token)
+    gateway_host = str(response.gateway_host)
+    gateway_scheme = str(response.gateway_scheme)
+    connect_path = str(response.connect_path)
+    host_key_fingerprint = str(response.host_key_fingerprint)
+    gateway_port = int(response.gateway_port)
+    expires_at_ms = int(response.expires_at_ms)
+
+    _validate_ssh_sandbox_id(sandbox_id)
+    _validate_ssh_token(token)
+    _validate_ssh_gateway_host(gateway_host)
+    if gateway_port < 1 or gateway_port > 65535:
+        raise SandboxError("CreateSshSession returned an invalid gateway port")
+    if gateway_scheme not in {"http", "https"}:
+        raise SandboxError("CreateSshSession returned an invalid gateway scheme")
+    if not _SSH_CONNECT_PATH_PATTERN.fullmatch(connect_path):
+        raise SandboxError("CreateSshSession returned an invalid connect path")
+    if host_key_fingerprint and not _SSH_FINGERPRINT_PATTERN.fullmatch(
+        host_key_fingerprint
+    ):
+        raise SandboxError("CreateSshSession returned an invalid host key fingerprint")
+    if expires_at_ms < 0:
+        raise SandboxError("CreateSshSession returned an invalid expiry timestamp")
+
+    return SshSession(
+        sandbox_id=sandbox_id,
+        token=token,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        gateway_scheme=gateway_scheme,
+        connect_path=connect_path,
+        host_key_fingerprint=host_key_fingerprint,
+        expires_at_ms=expires_at_ms,
+    )
+
+
+def _validate_ssh_sandbox_id(sandbox_id: str) -> None:
+    if not _SSH_SANDBOX_ID_PATTERN.fullmatch(sandbox_id):
+        raise SandboxError("sandbox_id must use the OpenShell SSH session charset")
+
+
+def _validate_ssh_token(token: str) -> None:
+    if not _SSH_TOKEN_PATTERN.fullmatch(token):
+        raise SandboxError("SSH session token uses an invalid charset")
+
+
+def _validate_ssh_gateway_host(gateway_host: str) -> None:
+    if not _SSH_GATEWAY_HOST_PATTERN.fullmatch(gateway_host):
+        raise SandboxError("CreateSshSession returned an invalid gateway host")
 
 
 def _default_spec() -> openshell_pb2.SandboxSpec:

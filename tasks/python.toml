@@ -15,6 +15,12 @@ depends = ["python:proto"]
 run = "uv run maturin build --release"
 hide = true
 
+["build:python:client-wheel"]
+description = "Build universal pure-Python gateway client wheel without CLI"
+depends = ["python:proto"]
+run = "tasks/scripts/build-python-client-wheel.sh"
+hide = true
+
 ["python:build"]
 description = "Alias for build:python:wheel"
 depends = ["build:python:wheel"]

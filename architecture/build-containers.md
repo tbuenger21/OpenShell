@@ -50,6 +50,17 @@ OpenShell also publishes Python wheels for `linux/amd64`, `linux/arm64`, and mac
 - The macOS ARM64 wheel is cross-compiled with `deploy/docker/Dockerfile.python-wheels-macos` via `build:python:wheel:macos`.
 - Release workflows mirror the CLI layout: a Linux matrix job for amd64/arm64, a separate macOS job, and release jobs that download the per-platform wheel artifacts directly before publishing.
 
+Applications that control a gateway programmatically do not need the native
+OpenShell CLI. `mise run build:python:client-wheel` builds a separate universal
+`py3-none-any` client artifact from `python/openshell`: the SDK and generated
+gRPC stubs only. The build allowlists those source files, records the exact Git
+revision in wheel metadata, and rejects a CLI executable, native library,
+cached bytecode, or tests. Consumers must verify that metadata and the staged
+source hashes before release; Potatostew uses this path for its orchestrator.
+The client includes the validated `CreateSshSession` and `RevokeSshSession`
+gRPC bindings; applications may implement interactive SSH transports without
+pulling in the native CLI.
+
 ## Sandbox Images
 
 Sandbox images are **not built in this repository**. They are maintained in the [openshell-community](https://github.com/nvidia/openshell-community) repository and pulled from `ghcr.io/nvidia/openshell-community/sandboxes/` at runtime.
