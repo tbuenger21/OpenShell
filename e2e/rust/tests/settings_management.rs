@@ -272,8 +272,13 @@ async fn settings_global_override_round_trip() {
         "sandbox setting should fail while key is global-managed:\n{}",
         blocked_sandbox_set.clean_output
     );
+    let blocked_sandbox_set_message = blocked_sandbox_set
+        .clean_output
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        blocked_sandbox_set.clean_output.contains("is managed"),
+        blocked_sandbox_set_message.contains("is managed globally"),
         "expected 'managed globally' error:\n{}",
         blocked_sandbox_set.clean_output
     );
