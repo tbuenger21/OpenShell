@@ -76,7 +76,9 @@ server:
   logLevel: info
   sandboxNamespace: openshell
   dbUrl: "sqlite:/var/openshell/openshell.db"
-  sandboxImage: "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
+  # Keep the default runtime reproducible. Releases record and verify this
+  # multi-platform community image separately from OpenShell-owned images.
+  sandboxImage: "ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525"
   # Kubernetes imagePullPolicy for sandbox pods.  Empty = Kubernetes default
   # (Always for :latest, IfNotPresent otherwise).  Set to "Always" for dev
   # clusters so new images are picked up without manual eviction.

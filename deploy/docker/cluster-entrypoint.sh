@@ -484,6 +484,19 @@ if [ -n "${OPENSHELL_GATEWAY_IMAGE:-}" ] && [ -f "$HELMCHART" ]; then
     sed -i -E "s|digest:[[:space:]]*\"?[^\"[:space:]]*\"?|digest: \"${gateway_digest}\"|" "$HELMCHART"
 fi
 
+# A release can supply an exact sandbox base dependency alongside its gateway
+# digest. Local development may still override it with an explicitly named
+# image, but reject shell/YAML metacharacters before interpolating it into the
+# generated HelmChart manifest.
+if [ -n "${OPENSHELL_SANDBOX_IMAGE:-}" ] && [ -f "$HELMCHART" ]; then
+    if ! printf '%s' "$OPENSHELL_SANDBOX_IMAGE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9./:@_-]*$'; then
+        echo "OPENSHELL_SANDBOX_IMAGE is not a valid image reference" >&2
+        exit 1
+    fi
+    echo "Setting sandbox image: ${OPENSHELL_SANDBOX_IMAGE}"
+    sed -i -E "s|sandboxImage:[[:space:]]*[^[:space:]]+|sandboxImage: ${OPENSHELL_SANDBOX_IMAGE}|" "$HELMCHART"
+fi
+
 if [ -f "$HELMCHART" ]; then
     IMAGE_PULL_POLICY_VALUE="${IMAGE_PULL_POLICY:-Always}"
     if [ -n "${IMAGE_PULL_POLICY:-}" ]; then

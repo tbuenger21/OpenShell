@@ -19,6 +19,9 @@ RELEASE_ALIASES_RAW="${OPENSHELL_RELEASE_ALIASES:-}"
 LEGACY_PROMOTION_TAG="${OPENSHELL_RELEASE_PROMOTE_TAG:-}"
 REGISTRY="${DOCKER_REGISTRY:-ghcr.io/tbuenger21/openshell}"
 PLATFORMS="${DOCKER_PLATFORMS:-linux/amd64,linux/arm64}"
+DEFAULT_SANDBOX_IMAGE="$(awk '$1 == "sandboxImage:" { gsub(/"/, "", $2); print $2; exit }' "${ROOT}/deploy/helm/openshell/values.yaml")"
+DEFAULT_CLUSTER_SANDBOX_IMAGE="$(awk '$1 == "sandboxImage:" { print $2; exit }' "${ROOT}/deploy/kube/manifests/openshell-helmchart.yaml")"
+SANDBOX_IMAGE="${OPENSHELL_SANDBOX_IMAGE:-$DEFAULT_SANDBOX_IMAGE}"
 COSIGN_KEY="${COSIGN_KEY:-}"
 E2E_BASE_PORT="${OPENSHELL_RELEASE_E2E_BASE_PORT:-18080}"
 REGISTRY_USERNAME="${OPENSHELL_REGISTRY_USERNAME:-}"
@@ -33,13 +36,16 @@ REQUESTED_RELEASE_ALIASES=()
 RELEASE_ALIASES=()
 PROMOTION_TAGS=()
 PINNED_IMAGES=()
+PINNED_SANDBOX_IMAGE=""
 
 usage() {
   cat >&2 <<'EOF'
 Usage: release-images.sh [options]
 
 Build source-SHA OpenShell gateway, supervisor, and cluster candidates, run the
-published-image E2E suites, then optionally sign and promote release tags.
+published-image E2E suites, then optionally sign and promote release tags. The
+external sandbox base is resolved to a verified multi-platform digest and
+recorded in release.env; it is not republished or signed as an OpenShell image.
 
 Options:
   --tag TAG                 Exact sha-<OpenShell commit> candidate tag
@@ -60,6 +66,9 @@ have Docker, Buildx, mise, uv, Cargo, and an SSH client.
 
 For a private registry, set both OPENSHELL_REGISTRY_USERNAME and
 OPENSHELL_REGISTRY_PASSWORD so the E2E cluster can pull the gateway candidate.
+
+OPENSHELL_SANDBOX_IMAGE may override the chart default for a release, but it
+must be an immutable multi-platform digest reference.
 EOF
 }
 
@@ -205,6 +214,11 @@ if [[ ! "$REGISTRY" =~ ^[A-Za-z0-9][A-Za-z0-9./:_-]*$ ]]; then
 fi
 if [[ ! "$PLATFORMS" =~ ^linux/[A-Za-z0-9_/-]+(,linux/[A-Za-z0-9_/-]+)*$ ]]; then
   echo "platforms must be a comma-separated linux platform list" >&2
+  exit 1
+fi
+if [[ -z "$DEFAULT_SANDBOX_IMAGE" || -z "$DEFAULT_CLUSTER_SANDBOX_IMAGE" || \
+  "$DEFAULT_SANDBOX_IMAGE" != "$DEFAULT_CLUSTER_SANDBOX_IMAGE" ]]; then
+  echo "the chart and cluster sandbox image defaults must match" >&2
   exit 1
 fi
 if [[ ! "$E2E_BASE_PORT" =~ ^[0-9]+$ ]] || (( E2E_BASE_PORT < 1024 || E2E_BASE_PORT > 65533 )); then
@@ -388,6 +402,33 @@ print(f"{image_ref}: verified platforms: {', '.join(sorted(available))}")
 PY
 }
 
+resolve_pinned_sandbox_image() {
+  local image_ref="$1"
+  local expected_digest actual_digest
+
+  case "$image_ref" in
+    *@sha256:*) ;;
+    *)
+      echo "sandbox image must be an immutable digest reference: $image_ref" >&2
+      return 1
+      ;;
+  esac
+  if [[ "${image_ref%@*}" == "$image_ref" || \
+    ! "${image_ref#*@}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "sandbox image has an invalid digest reference: $image_ref" >&2
+    return 1
+  fi
+
+  verify_tag "$image_ref"
+  expected_digest="${image_ref#*@}"
+  actual_digest="$(image_digest "$image_ref")"
+  if [[ "$actual_digest" != "$expected_digest" ]]; then
+    echo "sandbox image digest changed: expected $expected_digest, got $actual_digest" >&2
+    return 1
+  fi
+  PINNED_SANDBOX_IMAGE="${image_ref%@*}@${actual_digest}"
+}
+
 validate_pinned_image() {
   local component="$1"
   local image_ref="$2"
@@ -414,17 +455,22 @@ write_release_manifest() {
     echo "refusing to replace an existing release manifest directory: $OUTPUT_DIR" >&2
     return 1
   fi
+  if [[ -z "$PINNED_SANDBOX_IMAGE" ]]; then
+    echo "sandbox image must be resolved before writing a release manifest" >&2
+    return 1
+  fi
   output_parent="$(dirname "$OUTPUT_DIR")"
   output_name="$(basename "$OUTPUT_DIR")"
   temporary_output_dir="$(mktemp -d "${output_parent}/.${output_name}.tmp.XXXXXX")"
   temporary_manifest="${temporary_output_dir}/release.env.tmp"
   {
-    printf 'OPENSHELL_RELEASE_SCHEMA_VERSION=1\n'
+    printf 'OPENSHELL_RELEASE_SCHEMA_VERSION=2\n'
     printf 'OPENSHELL_RELEASE_CANDIDATE_TAG=%s\n' "$CANDIDATE_TAG"
     printf 'OPENSHELL_RELEASE_VERSION=%s\n' "$RELEASE_VERSION"
     printf 'OPENSHELL_SOURCE_REVISION=%s\n' "$SOURCE_REVISION"
     printf 'OPENSHELL_RELEASE_REGISTRY=%s\n' "$REGISTRY"
     printf 'OPENSHELL_RELEASE_PLATFORMS=%s\n' "$PLATFORMS"
+    printf 'OPENSHELL_SANDBOX_IMAGE=%s\n' "$PINNED_SANDBOX_IMAGE"
     for index in "${!COMPONENTS[@]}"; do
       component="${COMPONENTS[$index]}"
       printf 'OPENSHELL_%s_IMAGE=%s\n' "$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')" "${PINNED_IMAGES[$index]}"
@@ -444,7 +490,7 @@ write_release_manifest() {
 load_release_manifest() {
   local index component image_variable image_ref
   local manifest_schema_version manifest_candidate_tag manifest_release_version
-  local manifest_source_revision manifest_registry manifest_platforms
+  local manifest_source_revision manifest_registry manifest_platforms manifest_sandbox_image
   local -a manifest_keys
 
   manifest_keys=(
@@ -454,6 +500,7 @@ load_release_manifest() {
     OPENSHELL_SOURCE_REVISION
     OPENSHELL_RELEASE_REGISTRY
     OPENSHELL_RELEASE_PLATFORMS
+    OPENSHELL_SANDBOX_IMAGE
   )
   for component in "${COMPONENTS[@]}"; do
     manifest_keys+=("OPENSHELL_$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')_IMAGE")
@@ -464,10 +511,11 @@ load_release_manifest() {
     ! manifest_release_version="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_RELEASE_VERSION)" || \
     ! manifest_source_revision="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_SOURCE_REVISION)" || \
     ! manifest_registry="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_RELEASE_REGISTRY)" || \
-    ! manifest_platforms="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_RELEASE_PLATFORMS)"; then
+    ! manifest_platforms="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_RELEASE_PLATFORMS)" || \
+    ! manifest_sandbox_image="$(read_release_manifest_value "$RELEASE_ENV_PATH" OPENSHELL_SANDBOX_IMAGE)"; then
     return 1
   fi
-  if [[ "$manifest_schema_version" != "1" || \
+  if [[ "$manifest_schema_version" != "2" || \
     "$manifest_candidate_tag" != "$CANDIDATE_TAG" || \
     "$manifest_source_revision" != "$SOURCE_REVISION" || \
     "$manifest_registry" != "$REGISTRY" || \
@@ -476,6 +524,11 @@ load_release_manifest() {
     echo "release manifest does not match this requested release" >&2
     return 1
   fi
+  if [[ "$manifest_sandbox_image" != "$SANDBOX_IMAGE" ]]; then
+    echo "release manifest sandbox image does not match this requested release" >&2
+    return 1
+  fi
+  resolve_pinned_sandbox_image "$manifest_sandbox_image"
 
   PINNED_IMAGES=()
   for index in "${!COMPONENTS[@]}"; do
@@ -529,6 +582,7 @@ resolve_candidate_images() {
     verify_tag "$image_ref"
     PINNED_IMAGES+=("${image_repo}@$(image_digest "$image_ref")")
   done
+  resolve_pinned_sandbox_image "$SANDBOX_IMAGE"
   write_release_manifest
 }
 
@@ -597,6 +651,7 @@ run_e2e_suite() {
     "SKIP_IMAGE_PUSH=1" \
     "SKIP_CLUSTER_IMAGE_BUILD=1" \
     "OPENSHELL_GATEWAY_IMAGE=${PINNED_IMAGES[0]}" \
+    "OPENSHELL_SANDBOX_IMAGE=${PINNED_SANDBOX_IMAGE}" \
     "OPENSHELL_CLUSTER_IMAGE=${PINNED_IMAGES[2]}" \
     "${E2E_REGISTRY_AUTH[@]}" \
     mise run --no-deps --skip-deps cluster
@@ -614,6 +669,7 @@ run_e2e_suite() {
     "SKIP_IMAGE_PUSH=1" \
     "SKIP_CLUSTER_IMAGE_BUILD=1" \
     "OPENSHELL_GATEWAY_IMAGE=${PINNED_IMAGES[0]}" \
+    "OPENSHELL_SANDBOX_IMAGE=${PINNED_SANDBOX_IMAGE}" \
     "OPENSHELL_CLUSTER_IMAGE=${PINNED_IMAGES[2]}" \
     "${E2E_REGISTRY_AUTH[@]}" \
     "$@"
@@ -630,6 +686,7 @@ fi
 echo "  Candidate tag: $CANDIDATE_TAG"
 echo "  Registry:      $REGISTRY"
 echo "  Platforms:     $PLATFORMS"
+echo "  Sandbox base:  $SANDBOX_IMAGE"
 echo "  Release version: ${RELEASE_VERSION:-<none>}"
 if (( ${#RELEASE_ALIASES[@]} == 0 )); then
   echo "  Moving aliases:  <none>"

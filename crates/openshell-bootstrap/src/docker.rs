@@ -768,6 +768,11 @@ pub async fn ensure_container(
         // Helm chart. This is used by the release E2E flow.
         env_vars.push(format!("OPENSHELL_GATEWAY_IMAGE={gateway_image}"));
     }
+    if let Some(sandbox_image) = env_non_empty("OPENSHELL_SANDBOX_IMAGE") {
+        // The release flow passes its verified external sandbox dependency to
+        // the cluster entrypoint so E2E cannot follow a mutable base image.
+        env_vars.push(format!("OPENSHELL_SANDBOX_IMAGE={sandbox_image}"));
+    }
 
     // Disable TLS: pass through to the entrypoint so the HelmChart manifest
     // configures the server pod for plaintext HTTP.
