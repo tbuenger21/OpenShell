@@ -23,6 +23,7 @@ use tokio::time::{Instant, sleep};
 
 // Use a production setting because this suite runs against release images.
 const TEST_KEY: &str = "ocsf_json_enabled";
+const DEV_ONLY_KEY: &str = "dummy_bool";
 static SETTINGS_E2E_LOCK: Mutex<()> = Mutex::new(());
 
 struct CliResult {
@@ -152,6 +153,31 @@ async fn settings_global_override_round_trip() {
         initial.clean_output
     );
     assert_setting_line_with_scope(&initial.clean_output, TEST_KEY, "<unset>", "unset");
+
+    if std::env::var_os("OPENSHELL_E2E_EXPECT_PRODUCTION_SETTINGS").is_some() {
+        let dev_only_set = run_cli(&[
+            "settings",
+            "set",
+            &guard.name,
+            "--key",
+            DEV_ONLY_KEY,
+            "--value",
+            "true",
+        ])
+        .await;
+        assert!(
+            !dev_only_set.success,
+            "release image must reject the dev-only setting {DEV_ONLY_KEY}:\n{}",
+            dev_only_set.clean_output
+        );
+        assert!(
+            dev_only_set
+                .clean_output
+                .contains("unknown setting key 'dummy_bool'"),
+            "expected unknown-setting error for {DEV_ONLY_KEY}:\n{}",
+            dev_only_set.clean_output
+        );
+    }
 
     let set_sandbox = run_cli(&[
         "settings", "set", &guard.name, "--key", TEST_KEY, "--value", "true",

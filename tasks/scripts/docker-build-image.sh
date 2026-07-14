@@ -191,9 +191,9 @@ if [[ "${IS_FINAL_IMAGE}" == "1" ]] && {
   ATTESTATION_ARGS=(--provenance=mode=max --sbom=true)
 fi
 
-# Default to dev-settings so local builds include test-only settings
-# (dummy_bool, dummy_int) that e2e tests depend on, matching CI behaviour.
-EXTRA_CARGO_FEATURES="${EXTRA_CARGO_FEATURES:-openshell-core/dev-settings}"
+# Test-only settings are opt-in. Production image builds must not expose
+# development-only configuration keys.
+EXTRA_CARGO_FEATURES="${EXTRA_CARGO_FEATURES-}"
 
 FEATURE_ARGS=()
 if [[ -n "${EXTRA_CARGO_FEATURES}" ]]; then
