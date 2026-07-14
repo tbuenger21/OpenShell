@@ -9,6 +9,8 @@ use landlock::{
     RulesetAttr, RulesetCreatedAttr,
 };
 use miette::{IntoDiagnostic, Result};
+use nix::sys::stat::{SFlag, fstat};
+use std::os::fd::{AsFd, AsRawFd};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
@@ -153,8 +155,9 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
         for path in &read_only {
             if let Some(path_fd) = try_open_path(path, compatibility)? {
                 debug!(path = %path.display(), "Landlock allow read-only");
+                let access = access_for_path(&path_fd, access_read)?;
                 ruleset = ruleset
-                    .add_rule(PathBeneath::new(path_fd, access_read))
+                    .add_rule(PathBeneath::new(path_fd, access))
                     .into_diagnostic()?;
                 rules_applied += 1;
             }
@@ -163,8 +166,9 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
         for path in &read_write {
             if let Some(path_fd) = try_open_path(path, compatibility)? {
                 debug!(path = %path.display(), "Landlock allow read-write");
+                let access = access_for_path(&path_fd, access_all)?;
                 ruleset = ruleset
-                    .add_rule(PathBeneath::new(path_fd, access_all))
+                    .add_rule(PathBeneath::new(path_fd, access))
                     .into_diagnostic()?;
                 rules_applied += 1;
             }
@@ -277,6 +281,33 @@ pub fn apply(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<()> {
         enforce(prepared)?;
     }
     Ok(())
+}
+
+/// Drop directory-only rights when the opened policy target is a file or device node.
+///
+/// Landlock rejects that directory-only access right for file-backed rules.
+fn access_for_path(
+    path_fd: &PathFd,
+    access: landlock::BitFlags<AccessFs>,
+) -> Result<landlock::BitFlags<AccessFs>> {
+    let metadata = fstat(path_fd.as_fd().as_raw_fd()).into_diagnostic()?;
+    if SFlag::from_bits_retain(metadata.st_mode).contains(SFlag::S_IFDIR) {
+        return Ok(access);
+    }
+
+    // Keep this list aligned with the selected ABI if it is raised above V2.
+    let directory_only_access = AccessFs::ReadDir
+        | AccessFs::RemoveDir
+        | AccessFs::RemoveFile
+        | AccessFs::MakeChar
+        | AccessFs::MakeDir
+        | AccessFs::MakeReg
+        | AccessFs::MakeSock
+        | AccessFs::MakeFifo
+        | AccessFs::MakeBlock
+        | AccessFs::MakeSym
+        | AccessFs::Refer;
+    Ok(access & !directory_only_access)
 }
 
 /// Attempt to open a path for Landlock rule creation.
@@ -412,6 +443,37 @@ mod tests {
         let result = try_open_path(dir.path(), &LandlockCompatibility::BestEffort);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn prepare_accepts_read_only_and_read_write_file_paths() {
+        if !matches!(probe_availability(), LandlockAvailability::Available { .. }) {
+            return;
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let read_only_file = temp_dir.path().join("read-only-file");
+        let read_write_file = temp_dir.path().join("read-write-file");
+        std::fs::File::create(&read_only_file).unwrap();
+        std::fs::File::create(&read_write_file).unwrap();
+        let policy = SandboxPolicy {
+            version: 1,
+            filesystem: crate::policy::FilesystemPolicy {
+                read_only: vec![read_only_file],
+                read_write: vec![read_write_file],
+                include_workdir: false,
+            },
+            network: crate::policy::NetworkPolicy::default(),
+            landlock: crate::policy::LandlockPolicy {
+                compatibility: LandlockCompatibility::HardRequirement,
+            },
+            process: crate::policy::ProcessPolicy::default(),
+        };
+
+        let result = prepare(&policy, None);
+        if let Err(error) = result {
+            panic!("failed to prepare file-path rules: {error}");
+        }
     }
 
     #[test]
