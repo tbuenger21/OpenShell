@@ -16,8 +16,7 @@ pub const DEFAULT_COMMUNITY_REGISTRY: &str = "ghcr.io/nvidia/openshell-community
 /// Immutable default community sandbox image.
 ///
 /// This must stay aligned with the deployment chart's `sandboxImage` default.
-pub const DEFAULT_COMMUNITY_BASE_IMAGE: &str =
-    "ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525";
+pub const DEFAULT_COMMUNITY_BASE_IMAGE: &str = "ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525";
 
 /// Resolve a user-supplied image string into a fully-qualified reference.
 ///
