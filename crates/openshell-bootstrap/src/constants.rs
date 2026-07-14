@@ -15,7 +15,10 @@ pub const CLIENT_TLS_SECRET_NAME: &str = "openshell-client-tls";
 pub const SSH_HANDSHAKE_SECRET_NAME: &str = "openshell-ssh-handshake";
 const NODE_NAME_PREFIX: &str = "openshell-";
 const NODE_NAME_FALLBACK_SUFFIX: &str = "gateway";
-const KUBERNETES_MAX_NAME_LEN: usize = 253;
+// This value is used as a Docker container hostname as well as a k3s node name.
+// A single RFC 1123 DNS label is limited to 63 characters (and Docker/Linux
+// rejects hostnames longer than 64 characters).
+const NODE_NAME_MAX_LEN: usize = 63;
 
 pub fn container_name(name: &str) -> String {
     format!("openshell-cluster-{name}")
@@ -60,7 +63,7 @@ fn normalize_node_name_suffix(name: &str) -> String {
         normalized.push_str(NODE_NAME_FALLBACK_SUFFIX);
     }
 
-    let max_suffix_len = KUBERNETES_MAX_NAME_LEN.saturating_sub(NODE_NAME_PREFIX.len());
+    let max_suffix_len = NODE_NAME_MAX_LEN.saturating_sub(NODE_NAME_PREFIX.len());
     if normalized.len() > max_suffix_len {
         normalized.truncate(max_suffix_len);
         normalized.truncate(normalized.trim_end_matches('-').len());
@@ -101,12 +104,21 @@ mod tests {
     }
 
     #[test]
-    fn node_name_truncates_to_kubernetes_name_limit() {
+    fn node_name_truncates_to_hostname_limit() {
         let gateway_name = "A".repeat(400);
         let node_name = node_name(&gateway_name);
 
-        assert!(node_name.len() <= KUBERNETES_MAX_NAME_LEN);
+        assert!(node_name.len() <= NODE_NAME_MAX_LEN);
         assert!(node_name.starts_with(NODE_NAME_PREFIX));
         assert!(node_name.ends_with('a'));
+    }
+
+    #[test]
+    fn node_name_fits_release_e2e_container_hostname_limit() {
+        let gateway_name = format!("release-{}-python", "a".repeat(40));
+        let node_name = node_name(&gateway_name);
+
+        assert!(node_name.len() <= NODE_NAME_MAX_LEN);
+        assert!(node_name.starts_with("openshell-release-"));
     }
 }
