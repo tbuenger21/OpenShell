@@ -275,6 +275,8 @@ async fn settings_global_override_round_trip() {
     let blocked_sandbox_set_message = blocked_sandbox_set
         .clean_output
         .split_whitespace()
+        // Miette may insert standalone visual gutter tokens when it wraps an error.
+        .filter(|token| token.chars().any(char::is_alphanumeric))
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
