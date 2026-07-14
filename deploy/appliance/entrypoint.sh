@@ -18,6 +18,7 @@ GATEWAY_SERVICE_PORT="${OPENSHELL_GATEWAY_SERVICE_PORT:-8080}"
 IMAGE_CACHE_REQUIRED="${OPENSHELL_IMAGE_CACHE_REQUIRED:-1}"
 IMAGE_CACHE_REQUIRE_NEVER="${OPENSHELL_IMAGE_CACHE_REQUIRE_PULL_POLICY_NEVER:-1}"
 IMAGE_CACHE_RECONCILE_INTERVAL_S="${OPENSHELL_IMAGE_CACHE_RECONCILE_INTERVAL_S:-300}"
+SSH_HANDSHAKE_SECRET_NAME="openshell-ssh-handshake"
 
 GATEWAY_IMAGE=""
 SANDBOX_IMAGE=""
@@ -129,6 +130,48 @@ wait_for_kubernetes() {
     done
 
     return 1
+}
+
+ensure_ssh_handshake_secret() {
+    existing_secret=""
+
+    if ! KUBECONFIG="$KUBECONFIG_PATH" kubectl get namespace "$OPENSHELL_NAMESPACE" >/dev/null 2>&1; then
+        KUBECONFIG="$KUBECONFIG_PATH" kubectl create namespace "$OPENSHELL_NAMESPACE" >/dev/null \
+            || die "failed to create OpenShell namespace: $OPENSHELL_NAMESPACE"
+    fi
+
+    existing_secret="$(
+        KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$OPENSHELL_NAMESPACE" \
+            get secret "$SSH_HANDSHAKE_SECRET_NAME" -o jsonpath='{.data.secret}' 2>/dev/null || true
+    )"
+    if [ -n "$existing_secret" ]; then
+        log "reusing persisted SSH handshake secret"
+        return 0
+    fi
+
+    handshake_secret="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+    if [ "${#handshake_secret}" -ne 64 ]; then
+        die "failed to generate SSH handshake secret"
+    fi
+
+    if KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$OPENSHELL_NAMESPACE" \
+        create secret generic "$SSH_HANDSHAKE_SECRET_NAME" \
+        --from-literal="secret=$handshake_secret" >/dev/null 2>&1; then
+        log "created persisted SSH handshake secret"
+        return 0
+    fi
+
+    # A parallel bootstrap may have won the create race. Reuse rather than rotate.
+    existing_secret="$(
+        KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$OPENSHELL_NAMESPACE" \
+            get secret "$SSH_HANDSHAKE_SECRET_NAME" -o jsonpath='{.data.secret}' 2>/dev/null || true
+    )"
+    if [ -n "$existing_secret" ]; then
+        log "reusing concurrently created SSH handshake secret"
+        return 0
+    fi
+
+    die "failed to create SSH handshake secret"
 }
 
 apply_agent_sandbox_manifest() {
@@ -292,6 +335,10 @@ fi
 
 log "k3s is ready"
 
+# The appliance starts k3s directly, without the normal OpenShell bootstrap
+# process. Create this prerequisite before the Helm chart creates its gateway.
+ensure_ssh_handshake_secret
+
 if [ "$IMAGE_CACHE_REQUIRED" = "1" ]; then
     "$IMAGE_CACHE_SCRIPT" ensure
     start_image_cache_reconcile
@@ -310,4 +357,3 @@ else
 fi
 
 wait "$K3S_PID"
-
