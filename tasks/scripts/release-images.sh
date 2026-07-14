@@ -247,7 +247,16 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 SOURCE_URL="$(canonical_image_source_url "$ROOT")"
 
-for command in docker git mise uv cargo ssh; do
+if ! command -v mise >/dev/null 2>&1; then
+  echo "mise is required on the release host" >&2
+  exit 1
+fi
+
+# Make tools declared in mise.toml available when this script is invoked
+# directly, rather than relying on an interactive shell activation.
+eval "$(mise activate bash)"
+
+for command in docker git uv cargo helm ssh; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required on the release host" >&2
     exit 1
