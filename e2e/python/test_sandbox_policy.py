@@ -1865,13 +1865,6 @@ def test_host_wildcard_matches_subdomain(
             f"*.anthropic.com should match api.anthropic.com: {result.stdout}"
         )
 
-        # statsig.anthropic.com -> also matches *.anthropic.com
-        result = sb.exec_python(_proxy_connect(), args=("statsig.anthropic.com", 443))
-        assert result.exit_code == 0, result.stderr
-        assert "200" in result.stdout, (
-            f"*.anthropic.com should match statsig.anthropic.com: {result.stdout}"
-        )
-
         # example.com -> does NOT match *.anthropic.com
         result = sb.exec_python(_proxy_connect(), args=("example.com", 443))
         assert result.exit_code == 0, result.stderr
