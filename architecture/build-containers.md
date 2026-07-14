@@ -52,13 +52,16 @@ OpenShell also publishes Python wheels for `linux/amd64`, `linux/arm64`, and mac
 
 Sandbox images are **not built in this repository**. They are maintained in the [openshell-community](https://github.com/nvidia/openshell-community) repository and pulled from `ghcr.io/nvidia/openshell-community/sandboxes/` at runtime.
 
-The default sandbox image is `ghcr.io/nvidia/openshell-community/sandboxes/base:latest`. To use a named community sandbox:
+The default `base` sandbox image is pinned to
+`ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525`.
+To use another named community sandbox:
 
 ```bash
 openshell sandbox create --from <name>
 ```
 
-This pulls `ghcr.io/nvidia/openshell-community/sandboxes/<name>:latest`.
+This pulls `ghcr.io/nvidia/openshell-community/sandboxes/<name>:latest`. For a
+production deployment, specify an explicit digest instead of a mutable tag.
 
 ## Local Development
 

@@ -12,23 +12,18 @@
 
 use std::io::Write;
 
+use openshell_e2e::harness::image::sandbox_image;
 use openshell_e2e::harness::output::strip_ansi;
 use openshell_e2e::harness::sandbox::SandboxGuard;
 
-const DOCKERFILE_CONTENT: &str = r#"FROM public.ecr.aws/docker/library/python:3.13-slim
-
-# iproute2 is required for sandbox network namespace isolation.
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create the sandbox user/group so the supervisor can switch to it.
-RUN groupadd -g 1000 sandbox && \
-    useradd -m -u 1000 -g sandbox sandbox
+const DOCKERFILE_TEMPLATE: &str = r#"FROM {sandbox_image}
 
 # Write a marker file so we can verify this is our custom image.
 # Place under /etc (Landlock baseline read-only path) so the sandbox
 # can read it when filesystem restrictions are properly enforced.
+USER root
 RUN echo "custom-image-e2e-marker" > /etc/marker.txt
+USER sandbox
 
 CMD ["sleep", "infinity"]
 "#;
@@ -44,7 +39,8 @@ async fn sandbox_from_custom_dockerfile() {
     let dockerfile_path = tmpdir.path().join("Dockerfile");
     {
         let mut f = std::fs::File::create(&dockerfile_path).expect("create Dockerfile");
-        f.write_all(DOCKERFILE_CONTENT.as_bytes())
+        let dockerfile = DOCKERFILE_TEMPLATE.replace("{sandbox_image}", &sandbox_image());
+        f.write_all(dockerfile.as_bytes())
             .expect("write Dockerfile");
     }
 
