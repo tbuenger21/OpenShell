@@ -27,6 +27,7 @@ E2E_BASE_PORT="${OPENSHELL_RELEASE_E2E_BASE_PORT:-18080}"
 REGISTRY_USERNAME="${OPENSHELL_REGISTRY_USERNAME:-}"
 REGISTRY_PASSWORD="${OPENSHELL_REGISTRY_PASSWORD:-}"
 OUTPUT_DIR="${OPENSHELL_RELEASE_OUTPUT_DIR:-}"
+RELEASE_RECORDS_DIR="${ROOT}/releases"
 VERSION_OUTPUT_DIR=""
 RESUME="${OPENSHELL_RELEASE_RESUME:-0}"
 REBUILD_CANDIDATE_MANIFEST=0
@@ -55,7 +56,7 @@ Options:
   --registry REPOSITORY     Registry namespace, e.g. ghcr.io/tbuenger21/openshell
   --platforms PLATFORMS     Comma-separated target platforms
   --e2e-base-port PORT      First host port for the three sequential E2E suites
-  --output-dir DIR          Durable candidate manifest directory
+  --output-dir DIR          Transient candidate manifest directory
   --resume                  Retest and promote the existing candidate manifest
   -h, --help                 Show this help
 
@@ -304,11 +305,7 @@ mkdir -p "$(dirname "$OUTPUT_DIR")"
 OUTPUT_DIR="$(cd "$(dirname "$OUTPUT_DIR")" && pwd)/$(basename "$OUTPUT_DIR")"
 RELEASE_ENV_PATH="${OUTPUT_DIR}/release.env"
 if [[ -n "$RELEASE_VERSION" ]]; then
-  VERSION_OUTPUT_DIR="$(dirname "$OUTPUT_DIR")/${RELEASE_VERSION}"
-  if [[ "$VERSION_OUTPUT_DIR" == "$OUTPUT_DIR" ]]; then
-    echo "--output-dir must differ from the version release record directory" >&2
-    exit 1
-  fi
+  VERSION_OUTPUT_DIR="${RELEASE_RECORDS_DIR}/${RELEASE_VERSION}"
 fi
 
 if [[ "$RESUME" == "1" ]]; then
@@ -555,6 +552,7 @@ write_version_release_record() {
   local version_manifest temporary_version_dir
 
   [[ -n "$VERSION_OUTPUT_DIR" ]] || return 0
+  mkdir -p "$(dirname "$VERSION_OUTPUT_DIR")"
   version_manifest="${VERSION_OUTPUT_DIR}/release.env"
   if [[ -e "$VERSION_OUTPUT_DIR" ]]; then
     if [[ ! -f "$version_manifest" ]] || ! cmp -s "$RELEASE_ENV_PATH" "$version_manifest"; then
@@ -737,8 +735,6 @@ run_e2e_suite rust "$((E2E_BASE_PORT + 1))" \
 run_e2e_suite resume "$((E2E_BASE_PORT + 2))" \
   cargo test --manifest-path e2e/rust/Cargo.toml --features e2e --test gateway_resume
 
-write_version_release_record
-
 if (( ${#PROMOTION_TAGS[@]} == 0 )); then
   echo
   echo "Candidate passed published-image E2E. No release tags were promoted."
@@ -764,5 +760,11 @@ for promotion_tag in "${PROMOTION_TAGS[@]}"; do
   done
 done
 
+write_version_release_record
+
 echo
 echo "Release tags promoted after published-image E2E and Cosign signing."
+if [[ -n "$VERSION_OUTPUT_DIR" ]]; then
+  echo "Version release record: ${VERSION_OUTPUT_DIR}/release.env"
+  echo "Commit the version record before another release: git add releases/${RELEASE_VERSION}"
+fi

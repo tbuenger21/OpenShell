@@ -12,6 +12,10 @@ authority is the digest-pinned `release.env`, never a tag. See
 [release signatures](../security/release-signatures.md) for the public Cosign
 verification key and verification command.
 
+Versioned records are public, non-secret deployment metadata and are committed
+under `releases/v<version>/`. The release VM's candidate output is temporary;
+Git is the canonical distribution point for a released manifest.
+
 ## Requirements
 
 The release VM needs Docker Buildx with `linux/amd64` and `linux/arm64` support,
@@ -28,22 +32,24 @@ procedure.
 
 ```bash
 cd /home/azureadmin/OpenShell
-OPEN_SHELL_SHA="$(git rev-parse HEAD)"
-OPEN_SHELL_RELEASE_ROOT="$HOME/.local/share/openshell/releases"
 source "$HOME/.config/potatostew/release/openshell.env"
 
 tasks/scripts/release-images.sh \
-  --output-dir "$OPEN_SHELL_RELEASE_ROOT/sha-${OPEN_SHELL_SHA}" \
   --version v<next-version> \
   --alias latest
 ```
 
 The command creates the candidate record at
-`$OPEN_SHELL_RELEASE_ROOT/sha-<commit>/release.env` and, after successful E2E,
-creates the equivalent versioned record at
-`$OPEN_SHELL_RELEASE_ROOT/v<version>/release.env` before signing and tag
-promotion. Do not rely only on the default `dist/releases/` output because it
-is part of a disposable build checkout.
+`dist/releases/sha-<commit>/release.env`. After successful E2E, signing, and
+tag promotion, it creates the equivalent Git-tracked versioned record at
+`releases/v<version>/release.env`. Review, commit, and push that record as the
+final release action:
+
+```bash
+git add releases/v<version>
+git commit -m "chore(release): record v<version> images"
+git push
+```
 
 The record contains the exact pinned gateway, supervisor, cluster, and external
 sandbox image digests. Keep it with the deployment configuration. Do not source
