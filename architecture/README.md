@@ -293,6 +293,7 @@ This opens an interactive SSH session into the sandbox, with all provider creden
 | [Gateway Security](gateway-security.md) | mTLS enforcement, PKI bootstrap, certificate hierarchy, and the gateway trust model. |
 | [Sandbox Architecture](sandbox.md) | The sandbox execution environment: policy enforcement, Landlock, seccomp, network namespaces, and the network proxy. |
 | [Container Management](build-containers.md) | Container images, Dockerfiles, Helm charts, build tasks, and CI/CD. |
+| [Release Pipeline](release-pipeline.md) | Local candidate image promotion, attestations, signing, and release-host requirements. |
 | [Sandbox Connect](sandbox-connect.md) | SSH tunneling into sandboxes through the gateway. |
 | [Sandbox Custom Containers](sandbox-custom-containers.md) | Building and using custom container images for sandboxes. |
 | [Providers](sandbox-providers.md) | External credential management, auto-discovery, and runtime injection. |

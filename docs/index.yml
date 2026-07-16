@@ -24,5 +24,7 @@ navigation:
   title: "Reference"
 - folder: security
   title: "Security"
+- folder: runbooks
+  title: "Runbooks"
 - folder: resources
   title: "Resources"

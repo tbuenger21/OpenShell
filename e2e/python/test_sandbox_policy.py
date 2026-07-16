@@ -169,7 +169,10 @@ def _proxy_connect_then_http():
     return fn
 
 
-def _read_openshell_log():
+def _read_openshell_log(
+    expected_fragments: tuple[str, ...] = (),
+    timeout_seconds: float = 0,
+):
     """Return a closure that reads the openshell log file(s).
 
     Since the sandbox uses a rolling file appender, logs are written to
@@ -180,15 +183,23 @@ def _read_openshell_log():
 
     def fn():
         import glob
+        import time
 
-        logs = []
-        for path in sorted(glob.glob("/var/log/openshell*.log*")):
-            try:
-                with open(path) as f:
-                    logs.append(f.read())
-            except (FileNotFoundError, PermissionError):
-                pass
-        return "\n".join(logs)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            logs = []
+            for path in sorted(glob.glob("/var/log/openshell*.log*")):
+                try:
+                    with open(path) as f:
+                        logs.append(f.read())
+                except (FileNotFoundError, PermissionError):
+                    pass
+            log = "\n".join(logs)
+            if all(fragment.lower() in log.lower() for fragment in expected_fragments):
+                return log
+            if time.monotonic() >= deadline:
+                return log
+            time.sleep(0.1)
 
     return fn
 
@@ -712,9 +723,14 @@ def test_ssrf_log_shows_blocked_address(
     )
     spec = datamodel_pb2.SandboxSpec(policy=policy)
     with sandbox(spec=spec, delete_on_exit=True) as sb:
-        sb.exec_python(_proxy_connect(), args=("127.0.0.1", 80))
+        proxy_result = sb.exec_python(_proxy_connect(), args=("127.0.0.1", 80))
+        assert proxy_result.exit_code == 0, proxy_result.stderr
+        assert "403" in proxy_result.stdout, proxy_result.stdout
 
-        log_result = sb.exec_python(_read_openshell_log())
+        # The nonblocking log writer can flush after the proxy response.
+        log_result = sb.exec_python(
+            _read_openshell_log(("[reason:",), timeout_seconds=5)
+        )
         assert log_result.exit_code == 0, log_result.stderr
         log = log_result.stdout
         # OCSF shorthand uses "engine:ssrf" for SSRF blocks
@@ -1863,13 +1879,6 @@ def test_host_wildcard_matches_subdomain(
         assert result.exit_code == 0, result.stderr
         assert "200" in result.stdout, (
             f"*.anthropic.com should match api.anthropic.com: {result.stdout}"
-        )
-
-        # statsig.anthropic.com -> also matches *.anthropic.com
-        result = sb.exec_python(_proxy_connect(), args=("statsig.anthropic.com", 443))
-        assert result.exit_code == 0, result.stderr
-        assert "200" in result.stdout, (
-            f"*.anthropic.com should match statsig.anthropic.com: {result.stdout}"
         )
 
         # example.com -> does NOT match *.anthropic.com

@@ -7,7 +7,7 @@ OpenShell produces two container images, both published for `linux/amd64` and `l
 The gateway runs the control plane API server. It is deployed as a StatefulSet inside the cluster container via a bundled Helm chart.
 
 - **Docker target**: `gateway` in `deploy/docker/Dockerfile.images`
-- **Registry**: `ghcr.io/nvidia/openshell/gateway:latest`
+- **Registry**: `ghcr.io/nvidia/openshell/gateway:<version-or-digest>`
 - **Pulled when**: Cluster startup (the Helm chart triggers the pull)
 - **Entrypoint**: `openshell-gateway --port 8080` (gRPC + HTTP, mTLS)
 
@@ -16,10 +16,12 @@ The gateway runs the control plane API server. It is deployed as a StatefulSet i
 The cluster image is a single-container Kubernetes distribution that bundles the Helm charts, Kubernetes manifests, and the `openshell-sandbox` supervisor binary needed to bootstrap the control plane.
 
 - **Docker target**: `cluster` in `deploy/docker/Dockerfile.images`
-- **Registry**: `ghcr.io/nvidia/openshell/cluster:latest`
+- **Registry**: `ghcr.io/nvidia/openshell/cluster:<version-or-digest>`
 - **Pulled when**: `openshell gateway start`
 
 The supervisor binary (`openshell-sandbox`) is built by the shared `supervisor-builder` stage in `deploy/docker/Dockerfile.images` and placed at `/opt/openshell/bin/openshell-sandbox`. It is exposed to sandbox pods at runtime via a read-only `hostPath` volume mount — it is not baked into sandbox images.
+
+The Potatostew appliance uses k3s as its runtime base rather than this cluster image. Its Dockerfile copies the same binary from the selected immutable supervisor image into that node path, so appliance-hosted sandbox pods receive the supervisor too.
 
 ## Standalone Gateway Binary
 
@@ -33,6 +35,12 @@ OpenShell also publishes a standalone `openshell-gateway` binary as a GitHub rel
 
 Both the standalone artifact and the deployed container image use the `openshell-gateway` binary.
 
+Release builds publish source-SHA candidates first, test the registry artifacts,
+attach provenance/SBOM attestations, and sign them with a protected local Cosign
+key before promoting a semantic version and optional moving aliases. `latest` is
+an explicit operator promotion, not the default deployment input. See [Release
+Pipeline](release-pipeline.md).
+
 ## Python Wheels
 
 OpenShell also publishes Python wheels for `linux/amd64`, `linux/arm64`, and macOS ARM64.
@@ -42,17 +50,31 @@ OpenShell also publishes Python wheels for `linux/amd64`, `linux/arm64`, and mac
 - The macOS ARM64 wheel is cross-compiled with `deploy/docker/Dockerfile.python-wheels-macos` via `build:python:wheel:macos`.
 - Release workflows mirror the CLI layout: a Linux matrix job for amd64/arm64, a separate macOS job, and release jobs that download the per-platform wheel artifacts directly before publishing.
 
+Applications that control a gateway programmatically do not need the native
+OpenShell CLI. `mise run build:python:client-wheel` builds a separate universal
+`py3-none-any` client artifact from `python/openshell`: the SDK and generated
+gRPC stubs only. The build allowlists those source files, records the exact Git
+revision in wheel metadata, and rejects a CLI executable, native library,
+cached bytecode, or tests. Consumers must verify that metadata and the staged
+source hashes before release; Potatostew uses this path for its orchestrator.
+The client includes the validated `CreateSshSession` and `RevokeSshSession`
+gRPC bindings; applications may implement interactive SSH transports without
+pulling in the native CLI.
+
 ## Sandbox Images
 
 Sandbox images are **not built in this repository**. They are maintained in the [openshell-community](https://github.com/nvidia/openshell-community) repository and pulled from `ghcr.io/nvidia/openshell-community/sandboxes/` at runtime.
 
-The default sandbox image is `ghcr.io/nvidia/openshell-community/sandboxes/base:latest`. To use a named community sandbox:
+The default `base` sandbox image is pinned to
+`ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525`.
+To use another named community sandbox:
 
 ```bash
 openshell sandbox create --from <name>
 ```
 
-This pulls `ghcr.io/nvidia/openshell-community/sandboxes/<name>:latest`.
+This pulls `ghcr.io/nvidia/openshell-community/sandboxes/<name>:latest`. For a
+production deployment, specify an explicit digest instead of a mutable tag.
 
 ## Local Development
 

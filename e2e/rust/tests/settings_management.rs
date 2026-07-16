@@ -21,7 +21,9 @@ use openshell_e2e::harness::output::strip_ansi;
 use openshell_e2e::harness::sandbox::SandboxGuard;
 use tokio::time::{Instant, sleep};
 
-const TEST_KEY: &str = "dummy_bool";
+// Use a production setting because this suite runs against release images.
+const TEST_KEY: &str = "ocsf_json_enabled";
+const DEV_ONLY_KEY: &str = "dummy_bool";
 static SETTINGS_E2E_LOCK: Mutex<()> = Mutex::new(());
 
 struct CliResult {
@@ -152,6 +154,31 @@ async fn settings_global_override_round_trip() {
     );
     assert_setting_line_with_scope(&initial.clean_output, TEST_KEY, "<unset>", "unset");
 
+    if std::env::var_os("OPENSHELL_E2E_EXPECT_PRODUCTION_SETTINGS").is_some() {
+        let dev_only_set = run_cli(&[
+            "settings",
+            "set",
+            &guard.name,
+            "--key",
+            DEV_ONLY_KEY,
+            "--value",
+            "true",
+        ])
+        .await;
+        assert!(
+            !dev_only_set.success,
+            "release image must reject the dev-only setting {DEV_ONLY_KEY}:\n{}",
+            dev_only_set.clean_output
+        );
+        assert!(
+            dev_only_set
+                .clean_output
+                .contains("unknown setting key 'dummy_bool'"),
+            "expected unknown-setting error for {DEV_ONLY_KEY}:\n{}",
+            dev_only_set.clean_output
+        );
+    }
+
     let set_sandbox = run_cli(&[
         "settings", "set", &guard.name, "--key", TEST_KEY, "--value", "true",
     ])
@@ -231,7 +258,7 @@ async fn settings_global_override_round_trip() {
     assert!(
         set_global
             .clean_output
-            .contains("Set global setting dummy_bool=false"),
+            .contains("Set global setting ocsf_json_enabled=false"),
         "expected global set output:\n{}",
         set_global.clean_output
     );
@@ -245,8 +272,15 @@ async fn settings_global_override_round_trip() {
         "sandbox setting should fail while key is global-managed:\n{}",
         blocked_sandbox_set.clean_output
     );
+    let blocked_sandbox_set_message = blocked_sandbox_set
+        .clean_output
+        .split_whitespace()
+        // Miette may insert standalone visual gutter tokens when it wraps an error.
+        .filter(|token| token.chars().any(char::is_alphanumeric))
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        blocked_sandbox_set.clean_output.contains("is managed"),
+        blocked_sandbox_set_message.contains("is managed globally"),
         "expected 'managed globally' error:\n{}",
         blocked_sandbox_set.clean_output
     );
@@ -289,7 +323,7 @@ async fn settings_global_override_round_trip() {
     assert!(
         delete_global
             .clean_output
-            .contains("Deleted global setting dummy_bool"),
+            .contains("Deleted global setting ocsf_json_enabled"),
         "expected global delete confirmation in output:\n{}",
         delete_global.clean_output
     );

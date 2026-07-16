@@ -6,12 +6,17 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from openshell._proto import openshell_pb2
 from openshell.sandbox import (
     _PYTHON_CLOUDPICKLE_BOOTSTRAP,
     _SANDBOX_PYTHON_BIN,
     InferenceRouteClient,
     SandboxClient,
+    SandboxError,
+    SandboxRef,
+    SandboxSession,
 )
 
 if TYPE_CHECKING:
@@ -21,6 +26,18 @@ if TYPE_CHECKING:
 class _FakeStub:
     def __init__(self) -> None:
         self.request: openshell_pb2.ExecSandboxRequest | None = None
+        self.create_ssh_request: openshell_pb2.CreateSshSessionRequest | None = None
+        self.revoke_ssh_request: openshell_pb2.RevokeSshSessionRequest | None = None
+        self.ssh_session_response = openshell_pb2.CreateSshSessionResponse(
+            sandbox_id="sandbox-1",
+            token="session-token",
+            gateway_host="gateway.example.test",
+            gateway_port=443,
+            gateway_scheme="https",
+            connect_path="/connect/ssh",
+            host_key_fingerprint="",
+            expires_at_ms=1234,
+        )
 
     def ExecSandbox(
         self,
@@ -32,6 +49,24 @@ class _FakeStub:
         yield openshell_pb2.ExecSandboxEvent(
             exit=openshell_pb2.ExecSandboxExit(exit_code=0)
         )
+
+    def CreateSshSession(
+        self,
+        request: openshell_pb2.CreateSshSessionRequest,
+        timeout: float | None = None,
+    ) -> openshell_pb2.CreateSshSessionResponse:
+        self.create_ssh_request = request
+        _ = timeout
+        return self.ssh_session_response
+
+    def RevokeSshSession(
+        self,
+        request: openshell_pb2.RevokeSshSessionRequest,
+        timeout: float | None = None,
+    ) -> openshell_pb2.RevokeSshSessionResponse:
+        self.revoke_ssh_request = request
+        _ = timeout
+        return openshell_pb2.RevokeSshSessionResponse(revoked=True)
 
 
 class _FakeInferenceStub:
@@ -66,6 +101,100 @@ def test_exec_sends_stdin_payload() -> None:
     assert result.exit_code == 0
     assert stub.request is not None
     assert stub.request.stdin == b"payload"
+
+
+def test_create_ssh_session_returns_validated_tunnel_credentials() -> None:
+    stub = _FakeStub()
+    client = _client_with_fake_stub(stub)
+
+    session = client.create_ssh_session("sandbox-1")
+
+    assert stub.create_ssh_request is not None
+    assert stub.create_ssh_request.sandbox_id == "sandbox-1"
+    assert session.sandbox_id == "sandbox-1"
+    assert session.token == "session-token"
+    assert session.gateway_host == "gateway.example.test"
+    assert session.gateway_port == 443
+    assert session.gateway_scheme == "https"
+    assert session.connect_path == "/connect/ssh"
+    assert session.expires_at_ms == 1234
+    assert "session-token" not in repr(session)
+
+
+def test_create_ssh_session_rejects_a_different_sandbox_response() -> None:
+    stub = _FakeStub()
+    stub.ssh_session_response.sandbox_id = "other-sandbox"
+    client = _client_with_fake_stub(stub)
+
+    with pytest.raises(SandboxError, match="different sandbox"):
+        client.create_ssh_session("sandbox-1")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("gateway_port", 0, "invalid gateway port"),
+        ("gateway_port", 65536, "invalid gateway port"),
+        ("gateway_scheme", "ssh", "invalid gateway scheme"),
+        ("connect_path", "connect/ssh", "invalid connect path"),
+        (
+            "host_key_fingerprint",
+            "SHA256:invalid fingerprint",
+            "invalid host key fingerprint",
+        ),
+        ("expires_at_ms", -1, "invalid expiry timestamp"),
+    ],
+)
+def test_create_ssh_session_rejects_invalid_tunnel_response(
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    stub = _FakeStub()
+    setattr(stub.ssh_session_response, field, value)
+    client = _client_with_fake_stub(stub)
+
+    with pytest.raises(SandboxError, match=error):
+        client.create_ssh_session("sandbox-1")
+
+
+def test_sandbox_session_creates_ssh_credentials_for_its_id() -> None:
+    stub = _FakeStub()
+    client = _client_with_fake_stub(stub)
+    sandbox = SandboxSession(
+        client,
+        SandboxRef(
+            id="sandbox-1",
+            name="sandbox-name",
+            namespace="default",
+            phase=1,
+        ),
+    )
+
+    session = sandbox.create_ssh_session()
+
+    assert session.sandbox_id == "sandbox-1"
+    assert stub.create_ssh_request is not None
+    assert stub.create_ssh_request.sandbox_id == "sandbox-1"
+
+
+def test_revoke_ssh_session_forwards_the_tunnel_token() -> None:
+    stub = _FakeStub()
+    client = _client_with_fake_stub(stub)
+
+    assert client.revoke_ssh_session("session-token") is True
+    assert stub.revoke_ssh_request is not None
+    assert stub.revoke_ssh_request.token == "session-token"
+
+
+def test_revoke_ssh_session_rejects_invalid_token() -> None:
+    stub = _FakeStub()
+    client = _client_with_fake_stub(stub)
+
+    with pytest.raises(SandboxError, match="invalid charset"):
+        client.revoke_ssh_session("token with spaces")
+
+    assert stub.revoke_ssh_request is None
 
 
 def test_exec_python_serializes_callable_payload() -> None:

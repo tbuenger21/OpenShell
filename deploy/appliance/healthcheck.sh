@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 set -eu
 
 KUBECONFIG_PATH="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
@@ -42,6 +45,11 @@ if [ "$REQUIRE_IMAGE_CACHE" = "1" ]; then
     fi
 fi
 
+if [ ! -x /opt/openshell/bin/openshell-sandbox ]; then
+    log "sandbox supervisor binary is missing: /opt/openshell/bin/openshell-sandbox"
+    exit 1
+fi
+
 ready="$(
     KUBECONFIG="$KUBECONFIG_PATH" kubectl -n "$OPENSHELL_NAMESPACE" \
         get statefulset openshell \
@@ -57,4 +65,3 @@ if ! gateway_port_is_reachable; then
     log "OpenShell gateway port is not reachable: $GATEWAY_PROBE_URL"
     exit 1
 fi
-

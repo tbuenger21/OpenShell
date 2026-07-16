@@ -7,21 +7,27 @@
 //! fully-qualified container image references. This module centralises that
 //! logic so every client resolves names identically.
 
-/// Default registry prefix for community sandbox images.
+/// Default registry prefix for non-base community sandbox images.
 ///
-/// Bare sandbox names are expanded to `{prefix}/{name}:latest`.
+/// Bare sandbox names other than `base` are expanded to `{prefix}/{name}:latest`.
 /// Override at runtime with the `OPENSHELL_COMMUNITY_REGISTRY` env var.
 pub const DEFAULT_COMMUNITY_REGISTRY: &str = "ghcr.io/nvidia/openshell-community/sandboxes";
+
+/// Immutable default community sandbox image.
+///
+/// This must stay aligned with the deployment chart's `sandboxImage` default.
+pub const DEFAULT_COMMUNITY_BASE_IMAGE: &str = "ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:d446c17105e7448e602238a8a5a4ddd0233c071082406522f81c31f8b1309525";
 
 /// Resolve a user-supplied image string into a fully-qualified reference.
 ///
 /// Resolution rules (applied in order):
 /// 1. If the value contains `/`, `:`, or `.` it is treated as a complete image
 ///    reference and returned as-is.
-/// 2. Otherwise it is treated as a community sandbox name and expanded to
-///    `{registry}/{value}:latest` where `{registry}` defaults to
-///    [`DEFAULT_COMMUNITY_REGISTRY`] but can be overridden via the
-///    `OPENSHELL_COMMUNITY_REGISTRY` environment variable.
+/// 2. The default `base` sandbox resolves to the immutable
+///    [`DEFAULT_COMMUNITY_BASE_IMAGE`].
+/// 3. Other community sandbox names are expanded to `{registry}/{value}:latest`
+///    where `{registry}` defaults to [`DEFAULT_COMMUNITY_REGISTRY`] but can be
+///    overridden via the `OPENSHELL_COMMUNITY_REGISTRY` environment variable.
 ///
 /// This function only handles image-name resolution. Dockerfile detection is
 /// the responsibility of the caller (e.g. the CLI's `resolve_from()`).
@@ -31,9 +37,13 @@ pub fn resolve_community_image(value: &str) -> String {
         return value.to_string();
     }
 
+    let registry_override = std::env::var("OPENSHELL_COMMUNITY_REGISTRY").ok();
+    if value == "base" && registry_override.is_none() {
+        return DEFAULT_COMMUNITY_BASE_IMAGE.to_string();
+    }
+
     // Community sandbox shorthand → expand with registry prefix.
-    let prefix = std::env::var("OPENSHELL_COMMUNITY_REGISTRY")
-        .unwrap_or_else(|_| DEFAULT_COMMUNITY_REGISTRY.to_string());
+    let prefix = registry_override.unwrap_or_else(|| DEFAULT_COMMUNITY_REGISTRY.to_string());
     let prefix = prefix.trim_end_matches('/');
     format!("{prefix}/{value}:latest")
 }
@@ -53,10 +63,7 @@ mod tests {
     fn bare_name_expands_to_community_registry() {
         let _guard = env_lock().lock().unwrap();
         let result = resolve_community_image("base");
-        assert_eq!(
-            result,
-            "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
-        );
+        assert_eq!(result, DEFAULT_COMMUNITY_BASE_IMAGE);
     }
 
     #[test]

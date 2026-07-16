@@ -14,13 +14,14 @@
 //! - A running openshell gateway (`openshell gateway start`)
 //! - Network access to ghcr.io/nvidia/openshell-community/sandboxes/
 
+use openshell_e2e::harness::image::sandbox_image;
 use openshell_e2e::harness::output::strip_ansi;
 use openshell_e2e::harness::sandbox::SandboxGuard;
 
 /// Create a sandbox using the community `base` image and verify it works.
 ///
 /// The `--from base` argument should resolve to:
-/// `ghcr.io/nvidia/openshell-community/sandboxes/base:latest`
+/// the immutable default community base image.
 #[tokio::test]
 async fn sandbox_from_community_base_image() {
     // Create a sandbox using the community "base" image.
@@ -44,9 +45,9 @@ async fn sandbox_from_community_base_image() {
 /// This tests that explicit image references work correctly.
 #[tokio::test]
 async fn sandbox_from_explicit_ghcr_image() {
-    let image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest";
+    let image = sandbox_image();
 
-    let mut guard = SandboxGuard::create(&["--from", image, "--", "cat", "/etc/os-release"])
+    let mut guard = SandboxGuard::create(&["--from", &image, "--", "cat", "/etc/os-release"])
         .await
         .expect("sandbox create from explicit GHCR image");
 

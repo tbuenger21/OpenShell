@@ -21,9 +21,9 @@ if [ -n "${IMAGE_TAG:-}" ]; then
 else
   IMAGE_TAG=dev
 fi
-ENV_FILE=.env
+ENV_FILE=${OPENSHELL_ENV_FILE:-.env}
 PUBLISHED_IMAGE_REPO_BASE_DEFAULT=ghcr.io/nvidia/openshell
-LOCAL_REGISTRY_CONTAINER=openshell-local-registry
+LOCAL_REGISTRY_CONTAINER=${OPENSHELL_LOCAL_REGISTRY_CONTAINER:-openshell-local-registry}
 LOCAL_REGISTRY_ADDR=127.0.0.1:5000
 
 if [ -n "${CI:-}" ] && [ -n "${CI_REGISTRY_IMAGE:-}" ]; then
@@ -122,6 +122,14 @@ is_local_registry_host() {
 }
 
 registry_reachable() {
+  # GitHub job containers talk to the host Docker daemon through its socket,
+  # but their own loopback cannot reach the daemon host's published port. A
+  # running registry container with the expected name/port is sufficient here;
+  # the subsequent image push/pull remains the end-to-end connectivity check.
+  if docker ps --filter "name=^${LOCAL_REGISTRY_CONTAINER}$" --filter "status=running" -q | grep -q .; then
+    return 0
+  fi
+
   curl -4 -fsS --max-time 2 "http://127.0.0.1:5000/v2/" >/dev/null 2>&1 || \
     curl -4 -fsS --max-time 2 "http://localhost:5000/v2/" >/dev/null 2>&1
 }

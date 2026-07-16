@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/image-release-metadata.sh"
+
 sha256_16() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print substr($1, 1, 16)}'
@@ -148,6 +151,18 @@ if [[ "${IS_FINAL_IMAGE}" == "1" ]]; then
   TAG_ARGS=(-t "${IMAGE_NAME}:${IMAGE_TAG}")
 fi
 
+METADATA_ARGS=()
+if [[ "${IS_FINAL_IMAGE}" == "1" ]]; then
+  SOURCE_REVISION="${OPENSHELL_IMAGE_SOURCE_REVISION:-$(git rev-parse HEAD 2>/dev/null || true)}"
+  SOURCE_URL="$(canonical_image_source_url "$PWD" 2>/dev/null || true)"
+  if [[ -n "${SOURCE_REVISION}" ]]; then
+    METADATA_ARGS+=(--label "org.opencontainers.image.revision=${SOURCE_REVISION}")
+  fi
+  if [[ -n "${SOURCE_URL}" ]]; then
+    METADATA_ARGS+=(--label "org.opencontainers.image.source=${SOURCE_URL}")
+  fi
+fi
+
 OUTPUT_ARGS=()
 if [[ -n "${DOCKER_OUTPUT:-}" ]]; then
   OUTPUT_ARGS=(--output "${DOCKER_OUTPUT}")
@@ -164,9 +179,21 @@ else
   exit 1
 fi
 
-# Default to dev-settings so local builds include test-only settings
-# (dummy_bool, dummy_int) that e2e tests depend on, matching CI behaviour.
-EXTRA_CARGO_FEATURES="${EXTRA_CARGO_FEATURES:-openshell-core/dev-settings}"
+# Provenance/SBOM attestations are registry artifacts. Buildx cannot attach
+# them to a local --load export, so retain local developer builds while making
+# every published final image attestable.
+ATTESTATION_ARGS=()
+if [[ "${IS_FINAL_IMAGE}" == "1" ]] && {
+  [[ "${DOCKER_PUSH:-}" == "1" ]] ||
+  [[ "${DOCKER_PLATFORM:-}" == *,* ]] ||
+  [[ "${DOCKER_OUTPUT:-}" == type=registry* ]];
+}; then
+  ATTESTATION_ARGS=(--provenance=mode=max --sbom=true)
+fi
+
+# Test-only settings are opt-in. Production image builds must not expose
+# development-only configuration keys.
+EXTRA_CARGO_FEATURES="${EXTRA_CARGO_FEATURES-}"
 
 FEATURE_ARGS=()
 if [[ -n "${EXTRA_CARGO_FEATURES}" ]]; then
@@ -186,7 +213,8 @@ docker buildx build \
   -f "${DOCKERFILE}" \
   --target "${DOCKER_TARGET}" \
   ${TAG_ARGS[@]+"${TAG_ARGS[@]}"} \
-  --provenance=false \
+  ${METADATA_ARGS[@]+"${METADATA_ARGS[@]}"} \
+  ${ATTESTATION_ARGS[@]+"${ATTESTATION_ARGS[@]}"} \
   "$@" \
   ${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"} \
   .
