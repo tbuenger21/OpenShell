@@ -1,6 +1,8 @@
 # Release Signatures
 
-OpenShell release candidates and promoted image tags are signed with Cosign.
+Candidate-only source-SHA publishes are intentionally unsigned. When a tested
+candidate is promoted to a version or moving alias, the release command signs
+its immutable image digests with Cosign before promoting those tags.
 The public verification key is
 [`openshell-release-cosign.pub`](./openshell-release-cosign.pub). The private
 key and its password are stored only on the trusted release VM and the local
